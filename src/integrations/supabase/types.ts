@@ -14,7 +14,128 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      qc_issues: {
+        Row: {
+          bucket: string
+          created_at: string
+          description: string | null
+          id: string
+          severity: string
+          suggested_fix: string | null
+          task_id: string
+          timestamp_sec: number | null
+          title: string
+        }
+        Insert: {
+          bucket: string
+          created_at?: string
+          description?: string | null
+          id?: string
+          severity: string
+          suggested_fix?: string | null
+          task_id: string
+          timestamp_sec?: number | null
+          title: string
+        }
+        Update: {
+          bucket?: string
+          created_at?: string
+          description?: string | null
+          id?: string
+          severity?: string
+          suggested_fix?: string | null
+          task_id?: string
+          timestamp_sec?: number | null
+          title?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "qc_issues_task_id_fkey"
+            columns: ["task_id"]
+            isOneToOne: false
+            referencedRelation: "qc_tasks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      qc_tasks: {
+        Row: {
+          analysis_summary: string | null
+          brand_score: number | null
+          contextual_score: number | null
+          created_at: string
+          critical_count: number | null
+          customer_intent: string | null
+          error_message: string | null
+          high_count: number | null
+          id: string
+          key_frames: Json | null
+          low_count: number | null
+          medium_count: number | null
+          overall_score: number | null
+          page_markdown: string | null
+          page_title: string | null
+          status: string
+          strategic_score: number | null
+          technical_score: number | null
+          thumbnail_url: string | null
+          topic_match_score: number | null
+          updated_at: string
+          url: string
+          video_url: string | null
+        }
+        Insert: {
+          analysis_summary?: string | null
+          brand_score?: number | null
+          contextual_score?: number | null
+          created_at?: string
+          critical_count?: number | null
+          customer_intent?: string | null
+          error_message?: string | null
+          high_count?: number | null
+          id?: string
+          key_frames?: Json | null
+          low_count?: number | null
+          medium_count?: number | null
+          overall_score?: number | null
+          page_markdown?: string | null
+          page_title?: string | null
+          status?: string
+          strategic_score?: number | null
+          technical_score?: number | null
+          thumbnail_url?: string | null
+          topic_match_score?: number | null
+          updated_at?: string
+          url: string
+          video_url?: string | null
+        }
+        Update: {
+          analysis_summary?: string | null
+          brand_score?: number | null
+          contextual_score?: number | null
+          created_at?: string
+          critical_count?: number | null
+          customer_intent?: string | null
+          error_message?: string | null
+          high_count?: number | null
+          id?: string
+          key_frames?: Json | null
+          low_count?: number | null
+          medium_count?: number | null
+          overall_score?: number | null
+          page_markdown?: string | null
+          page_title?: string | null
+          status?: string
+          strategic_score?: number | null
+          technical_score?: number | null
+          thumbnail_url?: string | null
+          topic_match_score?: number | null
+          updated_at?: string
+          url?: string
+          video_url?: string | null
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
