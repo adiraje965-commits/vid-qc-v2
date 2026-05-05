@@ -43,10 +43,15 @@ Deno.serve(async (req) => {
       // Direct video files
       if (/\.(mp4|webm|mov|m3u8|mpd)(\?|#|$)/i.test(clean)) found.add(clean);
       // Common video hosts / embeds
-      if (/(youtube\.com\/(watch|embed|shorts)|youtu\.be\/|vimeo\.com\/|player\.vimeo\.com|jwplayer|brightcove|kaltura|dailymotion\.com|wistia\.com|cdn\.jwplayer)/i.test(clean)) {
+      if (/(youtube\.com\/(watch|embed|shorts)|youtu\.be\/|vimeo\.com\/|player\.vimeo\.com|jwplayer|brightcove|kaltura|dailymotion\.com|wistia\.com|cdn\.jwplayer|videos\.bajajfinserv\.in)/i.test(clean)) {
         found.add(clean);
       }
     };
+
+    // Decode common HTML entities so attributes inside JSON blobs (&#34; etc.) match.
+    const decodeEntities = (s: string) =>
+      s.replace(/&#34;/g, '"').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+       .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">");
 
     // 1. Links array from Firecrawl
     for (const l of links) addIfVideo(l);
@@ -57,9 +62,11 @@ Deno.serve(async (req) => {
 
     // 3. HTML scan: <video>, <source>, <iframe>, data-* attributes (carousels often lazy-load)
     if (html) {
+      const decoded = decodeEntities(html);
+
       const attrRe = /(?:src|data-src|data-video|data-video-url|data-mp4|data-hls|data-poster-video|href)\s*=\s*["']([^"']+)["']/gi;
       let m: RegExpExecArray | null;
-      while ((m = attrRe.exec(html)) !== null) {
+      while ((m = attrRe.exec(decoded)) !== null) {
         try {
           const u = new URL(m[1], url).toString();
           addIfVideo(u);
@@ -69,8 +76,27 @@ Deno.serve(async (req) => {
       }
       // JSON blobs / inline scripts referencing video URLs
       const jsonUrlRe = /https?:\\?\/\\?\/[^"'\s<>)]+\.(?:mp4|webm|mov|m3u8|mpd)(?:\?[^"'\s<>)]*)?/gi;
-      const jsonMatches = html.match(jsonUrlRe) ?? [];
+      const jsonMatches = decoded.match(jsonUrlRe) ?? [];
       for (const u of jsonMatches) addIfVideo(u.replace(/\\\//g, "/"));
+
+      // Bajaj Finserv "kapsule" player: <... data-video-host="videos.bajajfinserv.in" data-video-id="gcc-...">
+      // Also matches kpointId / videoId fields inside JSON blobs.
+      const bajajIdRe = /(?:data-video-id|kpointId|videoId)["'\s:=]+["']?(gcc-[a-f0-9-]{8,})/gi;
+      let b: RegExpExecArray | null;
+      const seenIds = new Set<string>();
+      while ((b = bajajIdRe.exec(decoded)) !== null) {
+        const id = b[1];
+        if (seenIds.has(id)) continue;
+        seenIds.add(id);
+        found.add(`https://videos.bajajfinserv.in/kapsule/${id}/nv3/embedded`);
+      }
+
+      // Generic YouTube ID extraction (data-video-id="abc123" with youtube host)
+      const ytIdRe = /data-video-id=["']([A-Za-z0-9_-]{11})["'][^>]*data-video-host=["'][^"']*youtube/gi;
+      let y: RegExpExecArray | null;
+      while ((y = ytIdRe.exec(decoded)) !== null) {
+        found.add(`https://www.youtube.com/watch?v=${y[1]}`);
+      }
     }
 
     const videoUrls = Array.from(found);
