@@ -107,14 +107,11 @@ export default function TaskDetail() {
             <div className="surface-card overflow-hidden">
               <div className="relative aspect-video bg-black">
                 {task.video_url ? (
-                  <video
-                    ref={videoRef}
-                    src={task.video_url}
-                    controls
-                    crossOrigin="anonymous"
-                    className="h-full w-full"
-                    onLoadedMetadata={(e) => setDuration((e.target as HTMLVideoElement).duration || 60)}
-                    onTimeUpdate={(e) => setCurrentTime((e.target as HTMLVideoElement).currentTime)}
+                  <VideoPlayer
+                    url={task.video_url}
+                    videoRef={videoRef}
+                    onLoadedMetadata={(d) => setDuration(d || 60)}
+                    onTimeUpdate={(t) => setCurrentTime(t)}
                   />
                 ) : (
                   <div className="flex h-full items-center justify-center text-muted-foreground">
