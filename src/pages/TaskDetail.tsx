@@ -275,6 +275,51 @@ export default function TaskDetail() {
   );
 }
 
+function VideoPlayer({ url, videoRef, onLoadedMetadata, onTimeUpdate }: {
+  url: string;
+  videoRef: React.RefObject<HTMLVideoElement>;
+  onLoadedMetadata: (d: number) => void;
+  onTimeUpdate: (t: number) => void;
+}) {
+  const isFile = /\.(mp4|webm|mov|m3u8|mpd)(\?|#|$)/i.test(url);
+  const ytMatch = url.match(/(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/);
+  const vimeoMatch = url.match(/vimeo\.com\/(?:video\/)?(\d+)/);
+  const isBajaj = /videos\.bajajfinserv\.in/i.test(url);
+
+  if (isFile) {
+    return (
+      <video
+        ref={videoRef}
+        src={url}
+        controls
+        playsInline
+        preload="metadata"
+        className="h-full w-full"
+        onLoadedMetadata={(e) => onLoadedMetadata((e.target as HTMLVideoElement).duration)}
+        onTimeUpdate={(e) => onTimeUpdate((e.target as HTMLVideoElement).currentTime)}
+      />
+    );
+  }
+
+  let embed = url;
+  if (ytMatch) embed = `https://www.youtube.com/embed/${ytMatch[1]}`;
+  else if (vimeoMatch) embed = `https://player.vimeo.com/video/${vimeoMatch[1]}`;
+  else if (isBajaj && !/embedded/.test(url)) {
+    const id = url.match(/(gcc-[a-f0-9-]+)/i)?.[1];
+    if (id) embed = `https://videos.bajajfinserv.in/kapsule/${id}/nv3/embedded`;
+  }
+
+  return (
+    <iframe
+      src={embed}
+      className="h-full w-full"
+      allow="autoplay; fullscreen; picture-in-picture; encrypted-media"
+      allowFullScreen
+      referrerPolicy="no-referrer-when-downgrade"
+    />
+  );
+}
+
 function markerClass(s: Severity) {
   return {
     critical: "bg-severity-critical",
