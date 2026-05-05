@@ -38,15 +38,22 @@ export default function NewAnalysis() {
   };
 
   const runQc = async (video: DetectedVideo) => {
-    if (!scraped) return;
+    if (!scraped) {
+      toast.error("Please scan the page first");
+      return;
+    }
     setBusy(true);
     try {
+      console.log("[NewAnalysis] creating task for video", video.url);
       const id = await createTaskForVideo(url.trim(), video, { ...scraped, allVideos: scraped.videos }, compliance);
+      console.log("[NewAnalysis] task created", id, "navigating…");
       toast.success("Analysis started");
       nav(`/task/${id}`);
     } catch (err: any) {
-      toast.error(err?.message ?? "Failed to start");
-    } finally { setBusy(false); }
+      console.error("[NewAnalysis] runQc error", err);
+      toast.error(err?.message ?? "Failed to start analysis");
+      setBusy(false);
+    }
   };
 
   const runAll = async () => {
