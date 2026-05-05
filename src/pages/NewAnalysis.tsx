@@ -48,6 +48,7 @@ export default function NewAnalysis() {
     try {
       const r = await scrapePage(url.trim());
       setScraped(r);
+      try { sessionStorage.setItem(SCRAPE_CACHE_KEY, JSON.stringify({ url: url.trim(), result: r })); } catch {}
       if (!r.videos.length) toast.warning("No videos detected on this page");
       else toast.success(`Found ${r.videos.length} video${r.videos.length > 1 ? "s" : ""}`);
     } catch (err: any) {
