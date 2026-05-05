@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { AppHeader } from "@/components/AppHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,8 +12,11 @@ import { bulkCreate, createTaskForVideo, scrapePage, DetectedVideo, ScrapeResult
 import { toast } from "sonner";
 import { CheckCircle2, FileText, Link2, Loader2, Play, Search, Upload, Video } from "lucide-react";
 
+const SCRAPE_CACHE_KEY = "qc:lastScrape";
+
 export default function NewAnalysis() {
   const nav = useNavigate();
+  const [params] = useSearchParams();
   const [url, setUrl] = useState("");
   const [bulk, setBulk] = useState("");
   const [compliance, setCompliance] = useState(true);
@@ -21,6 +24,21 @@ export default function NewAnalysis() {
   const [busy, setBusy] = useState(false);
   const [scraped, setScraped] = useState<ScrapeResult | null>(null);
   const [queued, setQueued] = useState<string[]>([]);
+
+  // Restore previous scrape when returning from a task view
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(SCRAPE_CACHE_KEY);
+      if (!raw) return;
+      const cached = JSON.parse(raw) as { url: string; result: ScrapeResult };
+      const wantUrl = params.get("url") ?? cached.url;
+      if (wantUrl && cached.url === wantUrl) {
+        setUrl(cached.url);
+        setScraped(cached.result);
+      }
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleScan = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -30,6 +48,7 @@ export default function NewAnalysis() {
     try {
       const r = await scrapePage(url.trim());
       setScraped(r);
+      try { sessionStorage.setItem(SCRAPE_CACHE_KEY, JSON.stringify({ url: url.trim(), result: r })); } catch {}
       if (!r.videos.length) toast.warning("No videos detected on this page");
       else toast.success(`Found ${r.videos.length} video${r.videos.length > 1 ? "s" : ""}`);
     } catch (err: any) {
