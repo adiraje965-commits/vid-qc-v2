@@ -60,12 +60,14 @@ export type Database = {
       }
       qc_tasks: {
         Row: {
+          analysis_group_id: string | null
           analysis_summary: string | null
           brand_score: number | null
           contextual_score: number | null
           created_at: string
           critical_count: number | null
           customer_intent: string | null
+          detected_videos: Json | null
           error_message: string | null
           high_count: number | null
           id: string
@@ -82,15 +84,19 @@ export type Database = {
           topic_match_score: number | null
           updated_at: string
           url: string
+          video_count: number | null
+          video_index: number | null
           video_url: string | null
         }
         Insert: {
+          analysis_group_id?: string | null
           analysis_summary?: string | null
           brand_score?: number | null
           contextual_score?: number | null
           created_at?: string
           critical_count?: number | null
           customer_intent?: string | null
+          detected_videos?: Json | null
           error_message?: string | null
           high_count?: number | null
           id?: string
@@ -107,15 +113,19 @@ export type Database = {
           topic_match_score?: number | null
           updated_at?: string
           url: string
+          video_count?: number | null
+          video_index?: number | null
           video_url?: string | null
         }
         Update: {
+          analysis_group_id?: string | null
           analysis_summary?: string | null
           brand_score?: number | null
           contextual_score?: number | null
           created_at?: string
           critical_count?: number | null
           customer_intent?: string | null
+          detected_videos?: Json | null
           error_message?: string | null
           high_count?: number | null
           id?: string
@@ -132,6 +142,8 @@ export type Database = {
           topic_match_score?: number | null
           updated_at?: string
           url?: string
+          video_count?: number | null
+          video_index?: number | null
           video_url?: string | null
         }
         Relationships: []

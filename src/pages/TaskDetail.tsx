@@ -107,14 +107,11 @@ export default function TaskDetail() {
             <div className="surface-card overflow-hidden">
               <div className="relative aspect-video bg-black">
                 {task.video_url ? (
-                  <video
-                    ref={videoRef}
-                    src={task.video_url}
-                    controls
-                    crossOrigin="anonymous"
-                    className="h-full w-full"
-                    onLoadedMetadata={(e) => setDuration((e.target as HTMLVideoElement).duration || 60)}
-                    onTimeUpdate={(e) => setCurrentTime((e.target as HTMLVideoElement).currentTime)}
+                  <VideoPlayer
+                    url={task.video_url}
+                    videoRef={videoRef}
+                    onLoadedMetadata={(d) => setDuration(d || 60)}
+                    onTimeUpdate={(t) => setCurrentTime(t)}
                   />
                 ) : (
                   <div className="flex h-full items-center justify-center text-muted-foreground">
@@ -275,6 +272,51 @@ export default function TaskDetail() {
         </div>
       </main>
     </div>
+  );
+}
+
+function VideoPlayer({ url, videoRef, onLoadedMetadata, onTimeUpdate }: {
+  url: string;
+  videoRef: React.RefObject<HTMLVideoElement>;
+  onLoadedMetadata: (d: number) => void;
+  onTimeUpdate: (t: number) => void;
+}) {
+  const isFile = /\.(mp4|webm|mov|m3u8|mpd)(\?|#|$)/i.test(url);
+  const ytMatch = url.match(/(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/);
+  const vimeoMatch = url.match(/vimeo\.com\/(?:video\/)?(\d+)/);
+  const isBajaj = /videos\.bajajfinserv\.in/i.test(url);
+
+  if (isFile) {
+    return (
+      <video
+        ref={videoRef}
+        src={url}
+        controls
+        playsInline
+        preload="metadata"
+        className="h-full w-full"
+        onLoadedMetadata={(e) => onLoadedMetadata((e.target as HTMLVideoElement).duration)}
+        onTimeUpdate={(e) => onTimeUpdate((e.target as HTMLVideoElement).currentTime)}
+      />
+    );
+  }
+
+  let embed = url;
+  if (ytMatch) embed = `https://www.youtube.com/embed/${ytMatch[1]}`;
+  else if (vimeoMatch) embed = `https://player.vimeo.com/video/${vimeoMatch[1]}`;
+  else if (isBajaj && !/embedded/.test(url)) {
+    const id = url.match(/(gcc-[a-f0-9-]+)/i)?.[1];
+    if (id) embed = `https://videos.bajajfinserv.in/kapsule/${id}/nv3/embedded`;
+  }
+
+  return (
+    <iframe
+      src={embed}
+      className="h-full w-full"
+      allow="autoplay; fullscreen; picture-in-picture; encrypted-media"
+      allowFullScreen
+      referrerPolicy="no-referrer-when-downgrade"
+    />
   );
 }
 

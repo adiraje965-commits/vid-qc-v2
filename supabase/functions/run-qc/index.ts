@@ -147,20 +147,25 @@ Deno.serve(async (req) => {
   const supabase = createClient(SUPABASE_URL, SERVICE_ROLE);
 
   try {
-    const { taskId, url, complianceCheck } = await req.json();
+    const { taskId, url, complianceCheck, videoUrl: providedVideo, pageMarkdown: providedMd, pageTitle: providedTitle, skipScrape } = await req.json();
     if (!taskId || !url) throw new Error("taskId and url required");
 
-    // 1) Firecrawl
-    const scraped = await firecrawlScrape(url);
-    await supabase.from("qc_tasks").update({
-      page_title: scraped.metadata?.title ?? null,
-      page_markdown: scraped.markdown,
-      video_url: scraped.videoUrl,
-      thumbnail_url: scraped.metadata?.ogImage ?? null,
-    }).eq("id", taskId);
+    let pageMarkdown = providedMd ?? "";
+    let videoUrl = providedVideo ?? null;
+    if (!skipScrape || !pageMarkdown) {
+      const scraped = await firecrawlScrape(url);
+      pageMarkdown = pageMarkdown || scraped.markdown;
+      videoUrl = videoUrl || scraped.videoUrl;
+      await supabase.from("qc_tasks").update({
+        page_title: providedTitle ?? scraped.metadata?.title ?? null,
+        page_markdown: pageMarkdown,
+        video_url: videoUrl,
+        thumbnail_url: scraped.metadata?.ogImage ?? null,
+      }).eq("id", taskId);
+    }
 
     // 2) Gemini
-    const result = await runGemini(scraped.markdown, scraped.videoUrl, url, !!complianceCheck);
+    const result = await runGemini(pageMarkdown, videoUrl, url, !!complianceCheck);
 
     // 3) Score
     const { adjusted, overall } = computeOverall(result.bucket_scores, result.issues);
