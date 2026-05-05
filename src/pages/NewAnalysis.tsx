@@ -7,28 +7,59 @@ import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { bulkCreate, createTaskAndAnalyze } from "@/lib/qc-client";
+import { Badge } from "@/components/ui/badge";
+import { bulkCreate, createTaskForVideo, scrapePage, DetectedVideo, ScrapeResult } from "@/lib/qc-client";
 import { toast } from "sonner";
-import { CheckCircle2, FileText, Link2, Loader2, Upload } from "lucide-react";
+import { CheckCircle2, FileText, Link2, Loader2, Play, Search, Upload, Video } from "lucide-react";
 
 export default function NewAnalysis() {
   const nav = useNavigate();
   const [url, setUrl] = useState("");
   const [bulk, setBulk] = useState("");
   const [compliance, setCompliance] = useState(true);
+  const [scanning, setScanning] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [scraped, setScraped] = useState<ScrapeResult | null>(null);
   const [queued, setQueued] = useState<string[]>([]);
 
-  const handleSingle = async (e: React.FormEvent) => {
+  const handleScan = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!url.trim()) return;
+    setScanning(true);
+    setScraped(null);
+    try {
+      const r = await scrapePage(url.trim());
+      setScraped(r);
+      if (!r.videos.length) toast.warning("No videos detected on this page");
+      else toast.success(`Found ${r.videos.length} video${r.videos.length > 1 ? "s" : ""}`);
+    } catch (err: any) {
+      toast.error(err?.message ?? "Failed to scan page");
+    } finally { setScanning(false); }
+  };
+
+  const runQc = async (video: DetectedVideo) => {
+    if (!scraped) return;
     setBusy(true);
     try {
-      const id = await createTaskAndAnalyze(url.trim(), compliance);
+      const id = await createTaskForVideo(url.trim(), video, { ...scraped, allVideos: scraped.videos }, compliance);
       toast.success("Analysis started");
       nav(`/task/${id}`);
     } catch (err: any) {
       toast.error(err?.message ?? "Failed to start");
+    } finally { setBusy(false); }
+  };
+
+  const runAll = async () => {
+    if (!scraped) return;
+    setBusy(true);
+    try {
+      const ids: string[] = [];
+      for (const v of scraped.videos) {
+        const id = await createTaskForVideo(url.trim(), v, { ...scraped, allVideos: scraped.videos }, compliance);
+        ids.push(id);
+      }
+      toast.success(`Queued ${ids.length} analyses`);
+      nav("/");
     } finally { setBusy(false); }
   };
 
@@ -55,10 +86,10 @@ export default function NewAnalysis() {
   return (
     <div className="min-h-screen">
       <AppHeader />
-      <main className="mx-auto max-w-3xl px-6 py-10">
+      <main className="mx-auto max-w-4xl px-6 py-10">
         <h1 className="text-3xl font-semibold tracking-tight">New Analysis</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Provide a page URL — Firecrawl scrapes the context, then our AI scores the embedded video.
+          Scan a page, review every video found, then run QC on the ones that matter.
         </p>
 
         <div className="surface-card mt-6 p-6">
@@ -69,18 +100,67 @@ export default function NewAnalysis() {
             </TabsList>
 
             <TabsContent value="single" className="pt-6">
-              <form onSubmit={handleSingle} className="space-y-4">
+              <form onSubmit={handleScan} className="space-y-4">
                 <div>
                   <Label htmlFor="url">Landing Page URL</Label>
-                  <Input id="url" type="url" placeholder="https://www.bajajfinserv.in/personal-loan" value={url} onChange={(e) => setUrl(e.target.value)} className="mt-2 h-11" required />
-                  <p className="mt-1.5 text-xs text-muted-foreground">We'll scrape the page and locate the embedded video.</p>
+                  <Input id="url" type="url" placeholder="https://www.bajajfinserv.in/personal-loan" value={url} onChange={(e) => { setUrl(e.target.value); setScraped(null); }} className="mt-2 h-11" required />
                 </div>
                 <ComplianceToggle value={compliance} onChange={setCompliance} />
-                <Button type="submit" size="lg" disabled={busy} className="w-full gap-2">
-                  {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
-                  Run QC Analysis
+                <Button type="submit" size="lg" disabled={scanning} className="w-full gap-2">
+                  {scanning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+                  {scanning ? "Scanning page…" : "Scan Page for Videos"}
                 </Button>
               </form>
+
+              {scraped && (
+                <div className="mt-6 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-sm font-medium">{scraped.pageTitle ?? "Page"}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {scraped.videos.length} video{scraped.videos.length === 1 ? "" : "s"} detected
+                      </div>
+                    </div>
+                    {scraped.videos.length > 1 && (
+                      <Button onClick={runAll} disabled={busy} variant="secondary" size="sm" className="gap-2">
+                        {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+                        Run QC on All
+                      </Button>
+                    )}
+                  </div>
+
+                  {scraped.videos.length === 0 ? (
+                    <div className="rounded-md border border-dashed border-border bg-secondary/30 p-6 text-center text-sm text-muted-foreground">
+                      No embedded videos found. Try another page.
+                    </div>
+                  ) : (
+                    <ul className="space-y-2">
+                      {scraped.videos.map((v, i) => (
+                        <li key={v.url} className="flex items-center gap-3 rounded-lg border border-border bg-secondary/30 p-3">
+                          <div className="flex h-16 w-28 shrink-0 items-center justify-center overflow-hidden rounded-md bg-black/60">
+                            {v.thumbnail ? (
+                              <img src={v.thumbnail} alt="" className="h-full w-full object-cover" />
+                            ) : (
+                              <Video className="h-6 w-6 text-muted-foreground" />
+                            )}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm font-medium">Video {i + 1}</span>
+                              <Badge variant="outline" className="text-[10px] uppercase">{v.type}</Badge>
+                            </div>
+                            <div className="mt-0.5 truncate text-xs text-muted-foreground">{v.url}</div>
+                          </div>
+                          <Button onClick={() => runQc(v)} disabled={busy} size="sm" className="gap-1.5 shrink-0">
+                            {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+                            Run Video QC
+                          </Button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
             </TabsContent>
 
             <TabsContent value="bulk" className="space-y-4 pt-6">
@@ -103,7 +183,7 @@ export default function NewAnalysis() {
               {queued.length > 0 && (
                 <div className="rounded-md border border-border bg-secondary/50 p-3 text-sm">
                   Queued {queued.length} task(s).{" "}
-                  <a className="text-primary underline" onClick={() => nav("/")}>Go to Dashboard</a>
+                  <a className="text-primary underline cursor-pointer" onClick={() => nav("/")}>Go to Dashboard</a>
                 </div>
               )}
             </TabsContent>
