@@ -74,8 +74,11 @@ export default function TaskDetail() {
     <div className="min-h-screen">
       <AppHeader />
       <main className="mx-auto max-w-[1600px] px-6 py-6">
-        <Link to="/" className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground">
-          <ArrowLeft className="h-4 w-4" /> Back to dashboard
+        <Link
+          to={task.url ? `/new?url=${encodeURIComponent(task.url)}` : "/new"}
+          className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
+        >
+          <ArrowLeft className="h-4 w-4" /> Back to video list for this URL
         </Link>
 
         <div className="mt-3 flex flex-wrap items-end justify-between gap-3">
