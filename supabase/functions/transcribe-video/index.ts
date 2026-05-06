@@ -700,18 +700,18 @@ Deno.serve(async (req) => {
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("transcribe-video error:", msg);
-    if (e instanceof MissingSpeechToTextPermissionError) {
+    if (e instanceof ElevenLabsConfigurationError) {
       if (taskId) {
         await supabase.from("qc_tasks").update({
           transcript_status: "unsupported_source",
           transcript: [],
-          error_message: "Speech-to-text is not enabled on the configured ElevenLabs API key. Add the speech_to_text permission to that key, or paste/import a transcript manually.",
+          error_message: "ElevenLabs speech-to-text is not available with the configured API key. Add a valid key with speech_to_text permission, or paste/import a transcript manually.",
         }).eq("id", taskId);
       }
       return new Response(JSON.stringify({
         ok: true,
         status: "unsupported_source",
-        reason: "Speech-to-text permission missing on ElevenLabs API key.",
+        reason: "ElevenLabs speech-to-text is not available with the configured API key.",
       }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
