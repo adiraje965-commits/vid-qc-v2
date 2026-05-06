@@ -22,6 +22,8 @@ export interface QcTask {
   key_frames: KeyFrame[];
   transcript: TranscriptSegment[];
   transcript_status: "pending" | "ready" | "unsupported_source" | "failed" | null;
+  media_url: string | null;
+  media_kind: "mp4" | "hls" | null;
   analysis_summary: string | null;
   error_message: string | null;
   created_at: string;
