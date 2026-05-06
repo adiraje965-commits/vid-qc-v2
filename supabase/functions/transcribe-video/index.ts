@@ -585,7 +585,11 @@ async function transcribeHlsWithElevenLabs(hlsUrl: string): Promise<Segment[]> {
   return transcribeBlobWithElevenLabs(new Blob(chunks, { type: "video/mp2t" }), "kpoint-video.ts", "video/mp2t");
 }
 
-async function transcribeHlsWithGemini(hlsUrl: string): Promise<Segment[]> {
+async function transcribeBytesWithGemini(bytes: Uint8Array, mimeType: string): Promise<Segment[]> {
+  const { encode: base64Encode } = await import("https://deno.land/std@0.224.0/encoding/base64.ts");
+  const b64 = base64Encode(bytes);
+  const dataUrl = `data:${mimeType};base64,${b64}`;
+
   const tool = {
     type: "function",
     function: {
@@ -599,8 +603,8 @@ async function transcribeHlsWithGemini(hlsUrl: string): Promise<Segment[]> {
             items: {
               type: "object",
               properties: {
-                start: { type: "number", description: "Start time in seconds" },
-                end: { type: "number", description: "End time in seconds" },
+                start: { type: "number" },
+                end: { type: "number" },
                 text: { type: "string" },
                 speaker: { type: "string" },
               },
@@ -621,13 +625,13 @@ async function transcribeHlsWithGemini(hlsUrl: string): Promise<Segment[]> {
       {
         role: "system",
         content:
-          "You are a transcription engine. Listen to the provided video/audio and return an accurate, diarized transcript with realistic timestamps in seconds. Break into ~3-6 second segments at natural pauses or speaker changes. Do not invent content — transcribe only what is actually spoken.",
+          "You are a transcription engine. Listen to the provided video/audio and return an accurate, diarized transcript with realistic timestamps in seconds. Break into ~3-6 second segments at natural pauses or speaker changes. Transcribe only what is actually spoken.",
       },
       {
         role: "user",
         content: [
-          { type: "text", text: "Transcribe this video by calling submit_transcript." },
-          { type: "image_url", image_url: { url: hlsUrl } },
+          { type: "text", text: "Transcribe this audio by calling submit_transcript." },
+          { type: "image_url", image_url: { url: dataUrl } },
         ],
       },
     ],
@@ -652,6 +656,36 @@ async function transcribeHlsWithGemini(hlsUrl: string): Promise<Segment[]> {
     speaker: s.speaker ? String(s.speaker) : undefined,
   })).filter((s) => s.text);
   return segs;
+}
+
+async function downloadHlsBytes(hlsUrl: string): Promise<Uint8Array> {
+  const manifestRes = await fetch(hlsUrl, { headers: { ...BROWSER_HEADERS, Referer: pageOrigin(hlsUrl) } });
+  if (!manifestRes.ok) throw new Error(`Failed to download HLS manifest (${manifestRes.status})`);
+  const manifest = await manifestRes.text();
+  if (/#EXT-X-KEY:[^\n]*METHOD=(?!NONE)[A-Z0-9-]+/i.test(manifest)) {
+    throw new Error("DRM/encrypted HLS stream cannot be transcribed.");
+  }
+  const refs = manifest.split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
+  if (!refs.length) throw new Error("HLS manifest contains no media segments.");
+  if (refs.some((r) => /\.m3u8(\?|#|$)/i.test(r))) {
+    return downloadHlsBytes(absolutize(hlsUrl, refs.find((r) => /\.m3u8(\?|#|$)/i.test(r)) ?? refs[0]));
+  }
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  const maxBytes = 30 * 1024 * 1024;
+  for (const ref of refs) {
+    const segmentUrl = absolutize(hlsUrl, ref);
+    const res = await fetch(segmentUrl, { headers: { ...BROWSER_HEADERS, Referer: pageOrigin(hlsUrl) } });
+    if (!res.ok) throw new Error(`Failed to download HLS segment (${res.status})`);
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    total += bytes.byteLength;
+    if (total > maxBytes) throw new Error("HLS media is too large to transcribe in one request.");
+    chunks.push(bytes);
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) { merged.set(c, offset); offset += c.byteLength; }
+  return merged;
 }
 
 Deno.serve(async (req) => {
