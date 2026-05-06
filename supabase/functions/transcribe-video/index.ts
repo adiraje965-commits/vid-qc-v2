@@ -586,8 +586,8 @@ async function transcribeHlsWithElevenLabs(hlsUrl: string): Promise<Segment[]> {
 }
 
 async function transcribeBytesWithGemini(bytes: Uint8Array, mimeType: string): Promise<Segment[]> {
-  const { encode: base64Encode } = await import("https://deno.land/std@0.224.0/encoding/base64.ts");
-  const b64 = base64Encode(bytes);
+  const { encodeBase64 } = await import("https://deno.land/std@0.224.0/encoding/base64.ts");
+  const b64 = encodeBase64(bytes);
   const dataUrl = `data:${mimeType};base64,${b64}`;
 
   const tool = {
