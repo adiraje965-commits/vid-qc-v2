@@ -45,7 +45,7 @@ export function DeepReviewPanel({ taskId, videoUrl, pageContext }: Props) {
         </Button>
       </div>
       <p className="mb-2 text-xs text-muted-foreground">
-        Server downloads the actual video and lets the AI watch it end-to-end (visual + audio + supers + pacing). Replaces previous QC findings with real ones. Works for direct mp4/webm URLs up to 20 MB.
+        Server downloads the actual video, uploads it to Google AI's Files API, and lets Gemini 2.5 Pro watch it end-to-end (visual + audio + supers + pacing). Supports videos up to ~2GB / 1hr. Replaces previous QC findings with real ones.
       </p>
       <div className="flex items-center gap-2">
         <label className="text-[11px] uppercase tracking-wider text-muted-foreground">Persona</label>
