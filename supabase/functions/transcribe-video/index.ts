@@ -107,14 +107,24 @@ Deno.serve(async (req) => {
 
     await supabase.from("qc_tasks").update({ transcript_status: "pending" }).eq("id", taskId);
 
-    const segments = await transcribeWithElevenLabs(videoUrl as string);
+    const result = await transcribeWithElevenLabs(videoUrl as string);
+
+    if ("unsupported" in result) {
+      await supabase.from("qc_tasks").update({
+        transcript: [],
+        transcript_status: "unsupported_source",
+      }).eq("id", taskId);
+      return new Response(JSON.stringify({ ok: true, status: "unsupported_source" }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
 
     await supabase.from("qc_tasks").update({
-      transcript: segments,
+      transcript: result,
       transcript_status: "ready",
     }).eq("id", taskId);
 
-    return new Response(JSON.stringify({ ok: true, count: segments.length }), {
+    return new Response(JSON.stringify({ ok: true, count: result.length }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (e) {
