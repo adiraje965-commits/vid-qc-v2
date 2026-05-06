@@ -658,6 +658,38 @@ async function transcribeBytesWithGemini(bytes: Uint8Array, mimeType: string): P
   return segs;
 }
 
+let _ffmpegInstance: any = null;
+async function getFFmpeg() {
+  if (_ffmpegInstance) return _ffmpegInstance;
+  const mod: any = await import("https://esm.sh/@ffmpeg/ffmpeg@0.12.10?bundle");
+  const FFmpeg = mod.FFmpeg ?? mod.default?.FFmpeg;
+  const ff = new FFmpeg();
+  await ff.load({
+    coreURL: "https://esm.sh/@ffmpeg/core-st@0.12.6/dist/umd/ffmpeg-core.js",
+    wasmURL: "https://esm.sh/@ffmpeg/core-st@0.12.6/dist/umd/ffmpeg-core.wasm",
+  });
+  _ffmpegInstance = ff;
+  return ff;
+}
+
+async function extractMp3FromBytes(bytes: Uint8Array, inputName = "input.bin"): Promise<Uint8Array> {
+  const ff = await getFFmpeg();
+  await ff.writeFile(inputName, bytes);
+  await ff.exec([
+    "-i", inputName,
+    "-vn",
+    "-acodec", "libmp3lame",
+    "-b:a", "64k",
+    "-ac", "1",
+    "-ar", "16000",
+    "output.mp3",
+  ]);
+  const out = await ff.readFile("output.mp3");
+  try { await ff.deleteFile(inputName); } catch { /* ignore */ }
+  try { await ff.deleteFile("output.mp3"); } catch { /* ignore */ }
+  return out instanceof Uint8Array ? out : new Uint8Array(out);
+}
+
 async function downloadHlsBytes(hlsUrl: string): Promise<Uint8Array> {
   const manifestRes = await fetch(hlsUrl, { headers: { ...BROWSER_HEADERS, Referer: pageOrigin(hlsUrl) } });
   if (!manifestRes.ok) throw new Error(`Failed to download HLS manifest (${manifestRes.status})`);
@@ -774,16 +806,36 @@ Deno.serve(async (req) => {
         segments = await transcribeBytesWithGemini(bytes, mp4Res.headers.get("content-type") ?? "video/mp4");
       }
     } else {
+      // HLS path: download .ts segments, extract MP3 with WASM ffmpeg, then transcribe.
       try {
-        segments = await transcribeHlsWithElevenLabs(resolved.url);
+        const tsBytes = await downloadHlsBytes(resolved.url);
+        console.log(`HLS downloaded: ${tsBytes.byteLength} bytes; extracting MP3 with ffmpeg-wasm…`);
+        const mp3Bytes = await extractMp3FromBytes(tsBytes, "input.ts");
+        console.log(`MP3 extracted: ${mp3Bytes.byteLength} bytes; sending to ElevenLabs…`);
+        try {
+          segments = await transcribeBlobWithElevenLabs(
+            new Blob([mp3Bytes], { type: "audio/mpeg" }),
+            "audio.mp3",
+            "audio/mpeg",
+          );
+        } catch (err) {
+          if (err instanceof ElevenLabsConfigurationError) throw err;
+          console.warn("ElevenLabs MP3 failed, falling back to Gemini:", err instanceof Error ? err.message : String(err));
+          segments = await transcribeBytesWithGemini(mp3Bytes, "audio/mpeg");
+        }
       } catch (err) {
         if (err instanceof ElevenLabsConfigurationError) throw err;
-        console.warn("ElevenLabs HLS failed, falling back to Gemini:", err instanceof Error ? err.message : String(err));
-      }
-      if (!segments.length) {
-        console.log("Falling back to Gemini for HLS transcription.");
-        const bytes = await downloadHlsBytes(resolved.url);
-        segments = await transcribeBytesWithGemini(bytes, "video/mp2t");
+        console.warn("ffmpeg MP3 extraction failed, falling back to legacy HLS path:", err instanceof Error ? err.message : String(err));
+        try {
+          segments = await transcribeHlsWithElevenLabs(resolved.url);
+        } catch (err2) {
+          if (err2 instanceof ElevenLabsConfigurationError) throw err2;
+          console.warn("Legacy HLS path failed too, falling back to Gemini on raw bytes:", err2 instanceof Error ? err2.message : String(err2));
+        }
+        if (!segments.length) {
+          const bytes = await downloadHlsBytes(resolved.url);
+          segments = await transcribeBytesWithGemini(bytes, "video/mp2t");
+        }
       }
     }
     if (!segments.length) {
