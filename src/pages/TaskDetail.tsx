@@ -364,6 +364,7 @@ function TranscriptPanel({
   mediaKind,
   transcript,
   transcriptStatus,
+  transcriptError,
   currentTime,
   isProcessing,
   onSeek,
