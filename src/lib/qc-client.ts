@@ -88,6 +88,7 @@ export async function createTaskForVideo(
   };
 
   try {
+    const { data: { user } } = await supabase.auth.getUser();
     const { data, error } = await supabase
       .from("qc_tasks")
       .insert({
@@ -99,6 +100,7 @@ export async function createTaskForVideo(
         thumbnail_url: video.thumbnail ?? context.ogImage,
         detected_videos: context.allVideos as any,
         video_count: context.allVideos.length,
+        owner_id: user?.id ?? null,
       })
       .select("id")
       .single();

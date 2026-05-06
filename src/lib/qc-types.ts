@@ -26,6 +26,10 @@ export interface QcTask {
   media_kind: "mp4" | "hls" | null;
   analysis_summary: string | null;
   error_message: string | null;
+  owner_id?: string | null;
+  tags?: string[];
+  approval_status?: string;
+  approval_note?: string | null;
   created_at: string;
   updated_at: string;
 }
