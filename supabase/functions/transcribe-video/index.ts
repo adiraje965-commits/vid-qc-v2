@@ -658,6 +658,38 @@ async function transcribeBytesWithGemini(bytes: Uint8Array, mimeType: string): P
   return segs;
 }
 
+let _ffmpegInstance: any = null;
+async function getFFmpeg() {
+  if (_ffmpegInstance) return _ffmpegInstance;
+  const mod: any = await import("https://esm.sh/@ffmpeg/ffmpeg@0.12.10?bundle");
+  const FFmpeg = mod.FFmpeg ?? mod.default?.FFmpeg;
+  const ff = new FFmpeg();
+  await ff.load({
+    coreURL: "https://esm.sh/@ffmpeg/core-st@0.12.6/dist/umd/ffmpeg-core.js",
+    wasmURL: "https://esm.sh/@ffmpeg/core-st@0.12.6/dist/umd/ffmpeg-core.wasm",
+  });
+  _ffmpegInstance = ff;
+  return ff;
+}
+
+async function extractMp3FromBytes(bytes: Uint8Array, inputName = "input.bin"): Promise<Uint8Array> {
+  const ff = await getFFmpeg();
+  await ff.writeFile(inputName, bytes);
+  await ff.exec([
+    "-i", inputName,
+    "-vn",
+    "-acodec", "libmp3lame",
+    "-b:a", "64k",
+    "-ac", "1",
+    "-ar", "16000",
+    "output.mp3",
+  ]);
+  const out = await ff.readFile("output.mp3");
+  try { await ff.deleteFile(inputName); } catch { /* ignore */ }
+  try { await ff.deleteFile("output.mp3"); } catch { /* ignore */ }
+  return out instanceof Uint8Array ? out : new Uint8Array(out);
+}
+
 async function downloadHlsBytes(hlsUrl: string): Promise<Uint8Array> {
   const manifestRes = await fetch(hlsUrl, { headers: { ...BROWSER_HEADERS, Referer: pageOrigin(hlsUrl) } });
   if (!manifestRes.ok) throw new Error(`Failed to download HLS manifest (${manifestRes.status})`);
