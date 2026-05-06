@@ -186,6 +186,8 @@ export default function TaskDetail() {
             <TranscriptPanel
               taskId={task.id}
               videoUrl={task.video_url}
+              mediaUrl={task.media_url}
+              mediaKind={task.media_kind}
               transcript={(task.transcript ?? []) as TranscriptSegment[]}
               transcriptStatus={task.transcript_status}
               currentTime={currentTime}
