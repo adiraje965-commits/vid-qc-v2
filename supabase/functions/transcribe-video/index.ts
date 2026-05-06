@@ -5,6 +5,7 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const ELEVENLABS_API_KEY = Deno.env.get("ELEVENLABS_API_KEY")!;
 const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY")!;
+const FIRECRAWL_API_KEY = Deno.env.get("FIRECRAWL_API_KEY") ?? "";
 
 const BROWSER_HEADERS: Record<string, string> = {
   "User-Agent":
@@ -20,6 +21,13 @@ type ResolvedMedia =
   | { kind: "mp4"; url: string }
   | { kind: "hls"; url: string }
   | { kind: "none"; reason: string };
+
+const MEDIA_EXT_RE = /\.(mp4|m4a|m4v|mp3|webm|wav|ogg|mov|m3u8)(\?|#|$)/i;
+const BOT_GATE_MARKERS = /access denied|reference #|just a moment|attention required|cf-browser-verification|cf-chl-bypass|cloudflare|akamai|forbidden/i;
+
+function logResolve(...args: unknown[]) {
+  console.log("[resolve]", ...args);
+}
 
 function isKnownUnsupported(url: string | null): boolean {
   if (!url) return true;
@@ -46,49 +54,255 @@ function absolutize(base: string, ref: string): string {
   try { return new URL(ref, base).toString(); } catch { return ref; }
 }
 
+function pageOrigin(url: string): string {
+  try { return new URL(url).origin + "/"; } catch { return url; }
+}
+
+// Recursively walk a parsed JSON value collecting any string that looks like a media URL.
+function collectMediaFromJson(value: unknown, out: string[]) {
+  if (!value) return;
+  if (typeof value === "string") {
+    if (/^https?:\/\//i.test(value) && MEDIA_EXT_RE.test(value)) out.push(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const v of value) collectMediaFromJson(v, out);
+    return;
+  }
+  if (typeof value === "object") {
+    for (const v of Object.values(value as Record<string, unknown>)) collectMediaFromJson(v, out);
+  }
+}
+
+function pickBest(candidates: string[]): { kind: "mp4" | "hls"; url: string } | null {
+  // Prefer mp4 (cheaper STT path) over hls.
+  const mp4 = candidates.find((u) => classifyByExt(u) === "mp4");
+  if (mp4) return { kind: "mp4", url: mp4 };
+  const hls = candidates.find((u) => classifyByExt(u) === "hls");
+  if (hls) return { kind: "hls", url: hls };
+  return null;
+}
+
 function findMediaInHtml(html: string, baseUrl: string): { kind: "mp4" | "hls"; url: string } | null {
+  const candidates: string[] = [];
+
   // og:video / og:audio meta
-  const ogVideo = html.match(/<meta[^>]+property=["']og:(?:video|audio)(?::secure_url|:url)?["'][^>]+content=["']([^"']+)["']/i);
-  if (ogVideo?.[1]) {
-    const u = absolutize(baseUrl, ogVideo[1]);
-    const k = classifyByExt(u);
-    if (k) return { kind: k, url: u };
+  for (const m of html.matchAll(/<meta[^>]+property=["']og:(?:video|audio)(?::secure_url|:url)?["'][^>]+content=["']([^"']+)["']/gi)) {
+    candidates.push(absolutize(baseUrl, m[1]));
   }
   // <video src> or <source src>
-  const sourceTag = html.match(/<(?:source|video)[^>]+src=["']([^"']+\.(?:mp4|m3u8|m4a|webm|wav|mp3))["']/i);
-  if (sourceTag?.[1]) {
-    const u = absolutize(baseUrl, sourceTag[1]);
-    const k = classifyByExt(u);
-    if (k) return { kind: k, url: u };
+  for (const m of html.matchAll(/<(?:source|video|audio)[^>]+src=["']([^"']+)["']/gi)) {
+    candidates.push(absolutize(baseUrl, m[1]));
+  }
+  // data-* attributes
+  for (const m of html.matchAll(/\sdata-(?:src|hls|mp4|video-url|stream|playback-url|manifest)=["']([^"']+)["']/gi)) {
+    candidates.push(absolutize(baseUrl, m[1]));
   }
   // JSON-LD VideoObject contentUrl
-  const jsonLdMatches = html.matchAll(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi);
-  for (const m of jsonLdMatches) {
+  for (const m of html.matchAll(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
     try {
       const j = JSON.parse(m[1]);
-      const arr = Array.isArray(j) ? j : [j];
-      for (const node of arr) {
-        const cu = node?.contentUrl ?? node?.video?.contentUrl;
-        if (typeof cu === "string") {
-          const u = absolutize(baseUrl, cu);
-          const k = classifyByExt(u);
-          if (k) return { kind: k, url: u };
-        }
+      const collected: string[] = [];
+      collectMediaFromJson(j, collected);
+      for (const c of collected) candidates.push(absolutize(baseUrl, c));
+    } catch { /* ignore */ }
+  }
+  // Generic <script> JSON blobs (Next.js, Redux, Apollo, inline state)
+  for (const m of html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)) {
+    const s = m[1];
+    if (!s || s.length > 500_000) continue;
+    // Try direct JSON.parse for pure JSON blobs (e.g. __NEXT_DATA__).
+    const trimmed = s.trim();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      try {
+        const j = JSON.parse(trimmed);
+        const collected: string[] = [];
+        collectMediaFromJson(j, collected);
+        for (const c of collected) candidates.push(absolutize(baseUrl, c));
+      } catch { /* fall through */ }
+    }
+    // Pull JSON-ish object literals after `= {` and `JSON.parse("...")`.
+    for (const inner of s.matchAll(/JSON\.parse\(\s*(["'])((?:\\.|(?!\1).)*)\1\s*\)/g)) {
+      try {
+        const decoded = inner[2].replace(/\\(["'\\nrtbf/])/g, (_m, c) => {
+          const map: Record<string, string> = { n: "\n", r: "\r", t: "\t", b: "\b", f: "\f" };
+          return map[c] ?? c;
+        });
+        const j = JSON.parse(decoded);
+        const collected: string[] = [];
+        collectMediaFromJson(j, collected);
+        for (const c of collected) candidates.push(absolutize(baseUrl, c));
+      } catch { /* ignore */ }
+    }
+  }
+  // Generic regex over the whole document
+  for (const m of html.matchAll(/https?:\/\/[^\s"'<>\\]+\.(?:mp4|m4a|m4v|mp3|webm|wav|ogg|mov)(?:\?[^\s"'<>\\]*)?/gi)) {
+    candidates.push(m[0]);
+  }
+  for (const m of html.matchAll(/https?:\/\/[^\s"'<>\\]+\.m3u8(?:\?[^\s"'<>\\]*)?/gi)) {
+    candidates.push(m[0]);
+  }
+
+  // Base64-encoded URL pass: long base64 strings sometimes hide playback URLs.
+  for (const m of html.matchAll(/["']([A-Za-z0-9+/=]{60,})["']/g)) {
+    try {
+      const decoded = atob(m[1]);
+      if (/^https?:\/\//i.test(decoded) && MEDIA_EXT_RE.test(decoded)) {
+        candidates.push(decoded);
       }
     } catch { /* ignore */ }
   }
-  // Generic regex: prefer mp4 over m3u8 so STT works
-  const mp4 = html.match(/https?:\/\/[^\s"'<>]+\.(?:mp4|m4a|webm|wav|mp3)(?:\?[^\s"'<>]*)?/i);
-  if (mp4?.[0]) return { kind: "mp4", url: mp4[0] };
-  const hls = html.match(/https?:\/\/[^\s"'<>]+\.m3u8(?:\?[^\s"'<>]*)?/i);
-  if (hls?.[0]) return { kind: "hls", url: hls[0] };
+
+  const best = pickBest(candidates.filter((u) => /^https?:\/\//i.test(u)));
+  if (best) return best;
+
   // Iframe src — return so caller can recurse one level
   const iframe = html.match(/<iframe[^>]+src=["']([^"']+)["']/i);
   if (iframe?.[1]) {
     const u = absolutize(baseUrl, iframe[1]);
-    return { kind: "mp4", url: `__iframe__:${u}` }; // sentinel, caller detects
+    return { kind: "mp4", url: `__iframe__:${u}` };
   }
   return null;
+}
+
+function looksBlocked(status: number, body: string): boolean {
+  if ([401, 403, 451, 503].includes(status)) return true;
+  if (body.length < 4096 && BOT_GATE_MARKERS.test(body)) return true;
+  return false;
+}
+
+interface FetchedPage {
+  finalUrl: string;
+  html: string;
+  contentType: string;
+  status: number;
+  via: "direct" | "firecrawl";
+  extraLinks?: string[];
+}
+
+async function firecrawlScrape(url: string): Promise<FetchedPage | null> {
+  if (!FIRECRAWL_API_KEY) {
+    logResolve("firecrawl: skipped (no FIRECRAWL_API_KEY)");
+    return null;
+  }
+  try {
+    const res = await fetch("https://api.firecrawl.dev/v2/scrape", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${FIRECRAWL_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        url,
+        formats: ["rawHtml", "links"],
+        onlyMainContent: false,
+        waitFor: 2500,
+        location: { country: "IN", languages: ["en"] },
+      }),
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) {
+      const err = data?.error || res.statusText;
+      logResolve("firecrawl: failed", res.status, err);
+      if (res.status === 402) {
+        throw new Error("Firecrawl credits exhausted; cannot bypass bot wall.");
+      }
+      return null;
+    }
+    // Firecrawl v2 returns either top-level or under .data
+    const payload = data?.data ?? data ?? {};
+    const html: string = payload.rawHtml || payload.html || "";
+    const links: string[] = Array.isArray(payload.links) ? payload.links : [];
+    const finalUrl: string = payload.metadata?.sourceURL || payload.metadata?.url || url;
+    if (!html) {
+      logResolve("firecrawl: empty html");
+      return null;
+    }
+    logResolve("firecrawl: ok", { finalUrl, htmlLen: html.length, links: links.length });
+    return { finalUrl, html, contentType: "text/html", status: 200, via: "firecrawl", extraLinks: links };
+  } catch (e) {
+    if (e instanceof Error && /credits exhausted/i.test(e.message)) throw e;
+    logResolve("firecrawl: exception", e instanceof Error ? e.message : String(e));
+    return null;
+  }
+}
+
+async function fetchPageHtml(url: string): Promise<FetchedPage> {
+  // 1) Direct fetch first.
+  let directRes: Response | null = null;
+  let directBody = "";
+  let directStatus = 0;
+  let directCt = "";
+  try {
+    directRes = await fetch(url, {
+      method: "GET",
+      headers: { ...BROWSER_HEADERS, Referer: pageOrigin(url) },
+      redirect: "follow",
+    });
+    directStatus = directRes.status;
+    directCt = directRes.headers.get("content-type") ?? "";
+    // If it's media, surface as a non-HTML page so caller short-circuits.
+    if (classifyByContentType(directCt)) {
+      await directRes.body?.cancel();
+      return { finalUrl: directRes.url, html: "", contentType: directCt, status: directStatus, via: "direct" };
+    }
+    directBody = await directRes.text();
+  } catch (e) {
+    logResolve("direct: exception", e instanceof Error ? e.message : String(e));
+  }
+
+  const blocked = !directRes || looksBlocked(directStatus, directBody);
+  if (!blocked && directRes) {
+    logResolve("direct: ok", { status: directStatus, len: directBody.length });
+    return { finalUrl: directRes.url, html: directBody, contentType: directCt, status: directStatus, via: "direct" };
+  }
+  logResolve("direct: blocked, falling back to firecrawl", { status: directStatus, len: directBody.length });
+
+  // 2) Firecrawl fallback.
+  const fc = await firecrawlScrape(url);
+  if (fc) return fc;
+
+  // 3) Firecrawl unavailable — return whatever direct gave us so extractor can still try.
+  if (directRes) {
+    return { finalUrl: directRes.url, html: directBody, contentType: directCt, status: directStatus, via: "direct" };
+  }
+  throw new Error(`Failed to fetch source and Firecrawl unavailable.`);
+}
+
+function filterLinksForMedia(links: string[]): string[] {
+  return links.filter((u) => /^https?:\/\//i.test(u) && MEDIA_EXT_RE.test(u));
+}
+
+async function pickHlsVariant(masterUrl: string): Promise<{ url: string; encrypted: boolean }> {
+  try {
+    const res = await fetch(masterUrl, { headers: { ...BROWSER_HEADERS, Referer: pageOrigin(masterUrl) } });
+    if (!res.ok) return { url: masterUrl, encrypted: false };
+    const text = await res.text();
+    const encrypted = /#EXT-X-KEY:[^\n]*METHOD=(?!NONE)[A-Z0-9-]+/i.test(text);
+    if (!/#EXT-X-STREAM-INF/i.test(text)) {
+      return { url: masterUrl, encrypted };
+    }
+    // Master playlist: pick highest-bandwidth variant.
+    const lines = text.split(/\r?\n/);
+    let bestBw = -1;
+    let bestUri: string | null = null;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const bwMatch = line.match(/#EXT-X-STREAM-INF:[^\n]*BANDWIDTH=(\d+)/i);
+      if (bwMatch) {
+        const bw = Number(bwMatch[1]);
+        const uri = (lines[i + 1] || "").trim();
+        if (uri && !uri.startsWith("#") && bw > bestBw) {
+          bestBw = bw;
+          bestUri = uri;
+        }
+      }
+    }
+    const variant = bestUri ? absolutize(masterUrl, bestUri) : masterUrl;
+    return { url: variant, encrypted };
+  } catch {
+    return { url: masterUrl, encrypted: false };
+  }
 }
 
 async function resolveMediaUrl(input: string, depth = 0): Promise<ResolvedMedia> {
@@ -99,35 +313,62 @@ async function resolveMediaUrl(input: string, depth = 0): Promise<ResolvedMedia>
 
   // Quick win: extension says it's already media.
   const byExt = classifyByExt(input);
-  if (byExt) return { kind: byExt, url: input };
+  if (byExt) {
+    logResolve("by-ext", { kind: byExt, url: input });
+    return { kind: byExt, url: input };
+  }
 
-  // Probe headers
-  let res: Response;
+  let page: FetchedPage;
   try {
-    res = await fetch(input, { method: "GET", headers: BROWSER_HEADERS, redirect: "follow" });
+    page = await fetchPageHtml(input);
   } catch (e) {
-    return { kind: "none", reason: `Failed to fetch source: ${e instanceof Error ? e.message : String(e)}` };
-  }
-  if (!res.ok) {
-    return { kind: "none", reason: `Source returned ${res.status} ${res.statusText}` };
-  }
-  const ct = res.headers.get("content-type") ?? "";
-  const byCt = classifyByContentType(ct);
-  if (byCt) {
-    // It's media we can use directly. Discard body (we'll re-download in transcribe).
-    await res.body?.cancel();
-    return { kind: byCt, url: res.url };
+    return { kind: "none", reason: e instanceof Error ? e.message : String(e) };
   }
 
-  // It's HTML (or similar). Parse for media.
-  const html = await res.text();
-  const found = findMediaInHtml(html, res.url);
-  if (!found) return { kind: "none", reason: "No direct media file found inside the page." };
+  // Page actually returned media (direct fetch short-circuit).
+  if (!page.html && page.contentType) {
+    const k = classifyByContentType(page.contentType);
+    if (k) return { kind: k, url: page.finalUrl };
+  }
+
+  // Look inside the HTML.
+  let found = findMediaInHtml(page.html, page.finalUrl);
+
+  // Mix in Firecrawl-discovered links if extractor missed.
+  if (!found && page.extraLinks?.length) {
+    const links = filterLinksForMedia(page.extraLinks);
+    const best = pickBest(links);
+    if (best) {
+      logResolve("matched via firecrawl links", best);
+      found = best;
+    }
+  }
+
+  if (!found) {
+    if (page.status >= 400) {
+      return { kind: "none", reason: `Source returned ${page.status} and no media URL was found in the page.` };
+    }
+    return { kind: "none", reason: "No direct media file found inside the page." };
+  }
 
   if (found.url.startsWith("__iframe__:")) {
-    return resolveMediaUrl(found.url.slice("__iframe__:".length), depth + 1);
+    const iframeUrl = found.url.slice("__iframe__:".length);
+    logResolve("iframe-recurse", iframeUrl);
+    return resolveMediaUrl(iframeUrl, depth + 1);
   }
-  return { kind: found.kind, url: found.url };
+
+  logResolve("found media", found, "via", page.via);
+
+  // For HLS, inspect the manifest: pick best variant, reject DRM.
+  if (found.kind === "hls") {
+    const { url, encrypted } = await pickHlsVariant(found.url);
+    if (encrypted) {
+      return { kind: "none", reason: "DRM/encrypted HLS stream — cannot transcribe." };
+    }
+    return { kind: "hls", url };
+  }
+
+  return found;
 }
 
 function groupWords(words: Word[]): Segment[] {
@@ -161,7 +402,10 @@ function groupWords(words: Word[]): Segment[] {
 }
 
 async function transcribeMp4WithElevenLabs(mediaUrl: string): Promise<Segment[]> {
-  const mediaRes = await fetch(mediaUrl, { headers: BROWSER_HEADERS, redirect: "follow" });
+  const mediaRes = await fetch(mediaUrl, {
+    headers: { ...BROWSER_HEADERS, Referer: pageOrigin(mediaUrl) },
+    redirect: "follow",
+  });
   if (!mediaRes.ok) throw new Error(`Failed to download media (${mediaRes.status})`);
   const ct = mediaRes.headers.get("content-type") ?? "video/mp4";
   if (!classifyByContentType(ct)) {
@@ -186,7 +430,6 @@ async function transcribeMp4WithElevenLabs(mediaUrl: string): Promise<Segment[]>
 }
 
 async function transcribeHlsWithGemini(hlsUrl: string): Promise<Segment[]> {
-  // Gemini can ingest remote media via fileData; tell it to return diarized timestamped transcript.
   const tool = {
     type: "function",
     function: {
@@ -228,7 +471,6 @@ async function transcribeHlsWithGemini(hlsUrl: string): Promise<Segment[]> {
         role: "user",
         content: [
           { type: "text", text: "Transcribe this video by calling submit_transcript." },
-          // OpenAI-compatible image_url field also supports media URLs through the gateway.
           { type: "image_url", image_url: { url: hlsUrl } },
         ],
       },
@@ -267,6 +509,20 @@ Deno.serve(async (req) => {
     const mediaUrlOverride: string | null = body.mediaUrlOverride ?? null;
     if (!taskId) throw new Error("taskId required");
 
+    // Idempotency: if already ready and we have a cached media_url, skip (unless explicit override).
+    if (!mediaUrlOverride) {
+      const { data: existing } = await supabase
+        .from("qc_tasks")
+        .select("transcript_status, media_url")
+        .eq("id", taskId)
+        .maybeSingle();
+      if (existing?.transcript_status === "ready" && existing.media_url) {
+        return new Response(JSON.stringify({ ok: true, status: "ready", cached: true }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+    }
+
     const sourceUrl = mediaUrlOverride || videoUrl;
     if (!sourceUrl) {
       await supabase.from("qc_tasks").update({
@@ -291,7 +547,6 @@ Deno.serve(async (req) => {
       });
     }
 
-    // Persist what we resolved so the UI can show it and re-runs are cheap.
     await supabase.from("qc_tasks").update({
       media_url: resolved.url,
       media_kind: resolved.kind,

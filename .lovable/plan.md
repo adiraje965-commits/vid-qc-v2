@@ -1,96 +1,85 @@
 ## Goal
 
-Get a real spoken transcript from Bajaj Kapsule (and similar embed) videos so QC analysis is grounded in audio — without changing the URL the user pasted and without breaking the existing iframe player.
+Make `transcribe-video` actually succeed on Bajaj Kapsule and similar bot-gated embeds, without touching the player or the URL the user pasted.
 
-## Why it's failing
+## Root cause (confirmed)
 
-The pasted URL (`videos.bajajfinserv.in/.../embedded`) is an HTML iframe page, not a media file. ElevenLabs Scribe rejects HTML as `invalid_audio`. We need the actual `.mp4` / `.m3u8` that lives *inside* that page.
+Direct fetch from the edge function gets `403 Access Denied` from Akamai (Bajaj's CDN). Browser-like headers alone don't pass — Akamai also fingerprints TLS and runs a bot challenge that Deno's fetch can't solve. Every Bajaj task currently lands on `unsupported_source` with `Source returned 403 Forbidden`.
 
-## Core principle: URL-first, player untouched
+## Strategy
 
-- The URL the user pasted stays the source of truth. `qc_tasks.url` and `qc_tasks.video_url` are NOT overwritten.
-- The existing iframe / `<video>` player keeps using `video_url` exactly as today — embed pages keep playing in their iframe, direct mp4s keep playing in the native player.
-- Resolution to a direct media file happens **only** inside the `transcribe-video` edge function and is stored in a **new** column `media_url` used **only** by transcription. The player never reads it.
-
-## Resolver pipeline (server-side, transcribe-video)
+Layered improvements, all server-side, additive on top of the existing resolver.
 
 ```text
-video_url (from task)
-   |
-   v
-[1] HEAD/extension says audio/* or video/*?  --yes--> use as media_url
-   | no (it's HTML)
-   v
-[2] Fetch HTML with browser headers (UA + Referer)
-       |
-       +-- og:video / og:audio meta tag           -> media_url
-       +-- <video><source src=...>                -> media_url
-       +-- JSON-LD VideoObject contentUrl         -> media_url
-       +-- regex .mp4|.m4a|.mp3|.webm|.wav in JS  -> media_url
-       +-- regex .m3u8 (HLS)                      -> media_url (HLS path)
-       +-- iframe src on same page                -> recurse once
-   |
-   v
-[3a] media_url is mp4/m4a/etc.  -> ElevenLabs Scribe (existing path)
-[3b] media_url is .m3u8 (HLS)   -> Gemini 2.5 Pro via Lovable AI Gateway
-                                   with fileData(mime=application/x-mpegURL)
-                                   constrained to submit_transcript tool
-                                   returning TranscriptSegment[]
-[3c] nothing found              -> transcript_status = "unsupported_source"
-                                   error_message explains + offers manual paste
+sourceUrl
+  |
+  v
+[1] direct fetch (current path) — works for open hosts, ~free
+  |  on 403 / 401 / 451 / 503 / Access-Denied body
+  v
+[2] Firecrawl scrape (rawHtml + links)
+       - real headless browser, JS rendered, anti-bot bypass
+  |
+  v
+[3] Deeper extractor (existing + new signals)
+       existing: og:video, <source>, JSON-LD, regex mp4/m3u8, iframe
+       NEW: <script> JSON walks (__NEXT_DATA__, __INITIAL_STATE__,
+            Apollo, Redux) for *Url / playbackUrl / manifestUrl / src
+       NEW: data-* attribute scan
+       NEW: base64-encoded URL decode pass
+       NEW: Firecrawl `links` array filtered by media extension
+       NEW: iframe recursion routed through Firecrawl too
+  |
+  v
+[4] Validate candidate before spending STT budget
+       - HEAD with Range: bytes=0-0 + browser headers + Referer
+       - if HLS, fetch manifest text:
+           * master playlist → pick highest BANDWIDTH variant
+           * has #EXT-X-KEY METHOD!=NONE → reject as DRM
+  |
+  v
+[5] Transcribe (unchanged): ElevenLabs for mp4, Gemini Pro for hls
 ```
 
-Persist `media_url` and `media_kind` ("mp4" | "hls" | null) on `qc_tasks` so re-runs skip resolution.
+## Why Firecrawl
 
-## Manual fallback (does not change `video_url`)
-
-In `TaskDetail.tsx`, when `transcript_status` is `unsupported_source` or `failed`, render a small "Transcription source" affordance under the transcript panel:
-
-- Input: "Paste direct .mp4 URL for transcription only"
-- Button: "Transcribe from this URL"
-- On submit: invoke `transcribe-video` with `{ taskId, mediaUrlOverride }`. The function writes only `media_url`/`transcript`/`transcript_status`. **`video_url` is never touched**, so the player still shows the original embed.
-
-A small caption clarifies: "Player keeps using your original URL. This is only used to fetch audio for the transcript."
+- Already connected (`FIRECRAWL_API_KEY` in secrets, used by `scrape-page`).
+- Bypasses Akamai/Cloudflare bot walls by running a real browser.
+- Returns `rawHtml` (post-JS), which is exactly where the player constructs the `.mp4`/`.m3u8` URL at runtime.
+- Only invoked when direct fetch fails — open hosts stay on the cheap path, so credit usage stays low.
 
 ## Steps
 
-1. **Migration**
-   - Add `media_url text` and `media_kind text` to `qc_tasks` (nullable). No backfill.
+1. **`supabase/functions/transcribe-video/index.ts`** — single file, no DB migration (`media_url`/`media_kind` already exist).
+   - `fetchPageHtml(url)`: try direct fetch; on bot-gate fall back to Firecrawl `POST /v2/scrape` with `formats: ['rawHtml','links']`, `onlyMainContent: false`, `waitFor: 2500`, `location: { country: 'IN', languages: ['en'] }`.
+   - Bot-gate detection: status ∈ {401,403,451,503} OR body length < 2KB AND contains `Access Denied | Reference # | Just a moment | Attention Required | cf-browser-verification`.
+   - Expand `findMediaInHtml` with the new signals listed above.
+   - Iframe recursion routed through `fetchPageHtml` (so children also get Firecrawl when blocked).
+   - `validateMedia(url, kind)`: HEAD `Range: bytes=0-0` with browser headers + `Referer` = original page origin; HLS master playlist picker; encrypted-stream rejection.
+   - Idempotency: if `media_url` set and `transcript_status === 'ready'`, skip.
+   - On Firecrawl 402 (insufficient credits): set `unsupported_source` with a precise message so the manual override path remains usable.
+   - Structured logs tagged `[resolve]` indicating which path matched (`direct`, `firecrawl`, `iframe-recurse`, `script-json`, `links`).
 
-2. **`supabase/functions/transcribe-video/index.ts`**
-   - Drop the over-eager `\/embed(ed)?` and `player\.` rejects added in the last patch — let those URLs flow into the resolver. Keep YouTube/Vimeo on the unsupported list (need yt-dlp).
-   - Add `resolveMediaUrl(pageUrl)` with the pipeline above, browser headers (`User-Agent: Mozilla/5.0 ... Chrome/...`, `Referer` = page origin, `Accept: text/html,...`).
-   - Branch on `media_kind`: ElevenLabs for mp4, Gemini Pro fileData for m3u8, mark unsupported otherwise.
-   - Accept optional `mediaUrlOverride` in the request body — if present, skip resolution.
-   - Persist `media_url`, `media_kind`, `transcript`, `transcript_status`, `error_message`. Never write `video_url`.
+2. **`src/pages/TaskDetail.tsx`** — copy tweak only (~5 lines):
+   - When `error_message` mentions `403`, `Access Denied`, or `bot`, show: "This host blocks automated fetching. The video still plays above; we tried a rendered-browser fallback. If it still failed, paste a direct .mp4 URL below."
+   - Existing manual `mediaUrlOverride` UI stays as-is.
 
-3. **`supabase/functions/run-qc/index.ts`**
-   - No change to player wiring. Continue invoking `transcribe-video` after QC completes; the resolver now handles embeds.
+3. **No DB migration. No player changes. No client realtime work.**
 
-4. **`src/pages/TaskDetail.tsx`**
-   - Player code unchanged.
-   - Transcript panel: when status is `unsupported_source` or `failed`, render the manual `mediaUrlOverride` input + button described above.
-   - Show a subtle "Transcription source: <host of media_url>" line when `media_url` differs from `video_url`, so analysts know what audio was transcribed.
+## Files touched
 
-5. **`src/lib/qc-types.ts`**
-   - Add `media_url: string | null` and `media_kind: "mp4" | "hls" | null` to `QcTask`.
+- `supabase/functions/transcribe-video/index.ts` (substantial additions, same exports)
+- `src/pages/TaskDetail.tsx` (copy tweak)
 
-## Technical details
+## Acceptance
 
-- **HTML fetch headers** (Bajaj's Akamai gates default fetches with 403):
-  - `User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36`
-  - `Referer: <origin>/`
-  - `Accept: text/html,application/xhtml+xml,*/*;q=0.8`
-- **Gemini HLS path**: POST `https://ai.gateway.lovable.dev/v1/chat/completions`, model `google/gemini-2.5-pro`, message content `[{type:"text",...},{type:"file",file:{file_data:{mime_type:"application/x-mpegURL",file_uri:<m3u8>}}}]`, force `submit_transcript({segments:[{start,end,text,speaker?}]})` tool.
-- **Idempotency**: if `media_url` already set and `transcript_status === "ready"`, skip.
-- **Files touched**:
-  - new migration (add `media_url`, `media_kind`)
-  - `supabase/functions/transcribe-video/index.ts`
-  - `src/lib/qc-types.ts`
-  - `src/pages/TaskDetail.tsx`
+- Re-running QC on `9539d1c2…` and `9cc285fc…` (existing Bajaj tasks) populates `media_url`, sets `transcript_status='ready'`, and stores a non-empty transcript.
+- Open hosts (direct .mp4) still resolve on the fast path — no Firecrawl call, no extra credits.
+- DRM/encrypted streams cleanly return `unsupported_source` with reason "DRM/encrypted stream" instead of failing mid-transcription.
+- Manual `mediaUrlOverride` continues to work and skips both fetches.
 
-## Limitations
+## Limitations (unchanged)
 
-- DRM streams (Widevine etc.) remain untranscribable — no legitimate workaround.
-- YouTube/Vimeo still need yt-dlp; those stay `unsupported_source` with the manual paste fallback.
-- If Bajaj rotates to signed-cookie streams, auto-resolution may fail; the manual paste path remains.
+- Widevine/FairPlay DRM: untranscribable. We now fail cleanly with a clear reason.
+- YouTube/Vimeo: still need yt-dlp; out of scope. Manual paste fallback covers them.
+- Firecrawl credit exhaustion: degrades gracefully to manual paste with a clear message.
