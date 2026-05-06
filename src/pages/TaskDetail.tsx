@@ -374,6 +374,7 @@ function TranscriptPanel({
   mediaKind: "mp4" | "hls" | null;
   transcript: TranscriptSegment[];
   transcriptStatus: QcTask["transcript_status"];
+  transcriptError: string | null;
   currentTime: number;
   isProcessing: boolean;
   onSeek: (t: number) => void;
