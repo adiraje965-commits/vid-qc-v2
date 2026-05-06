@@ -2,11 +2,15 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { AppHeader } from "@/components/AppHeader";
-import { BUCKET_LABEL, KeyFrame, QcIssue, QcTask, scoreColor, severityClass, Severity } from "@/lib/qc-types";
+import { BUCKET_LABEL, KeyFrame, QcIssue, QcTask, TranscriptSegment, scoreColor, severityClass, Severity } from "@/lib/qc-types";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { ArrowLeft, ExternalLink, Loader2, AlertTriangle, ShieldAlert, Activity, Sparkles } from "lucide-react";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { ArrowLeft, ExternalLink, Loader2, AlertTriangle, ShieldAlert, Activity, Sparkles, Copy, Search, FileText } from "lucide-react";
+import { toast } from "@/hooks/use-toast";
 
 const BUCKET_ICONS: Record<string, any> = { technical: Activity, brand: Sparkles, strategic: ShieldAlert, contextual: AlertTriangle };
 
