@@ -12,6 +12,9 @@ import { QcTask, scoreColor } from "@/lib/qc-types";
 export default function Dashboard() {
   const [tasks, setTasks] = useState<QcTask[]>([]);
   const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [tagFilter, setTagFilter] = useState<string>("");
+  const [statusFilter, setStatusFilter] = useState<string>("all");
 
   useEffect(() => {
     const load = async () => {
@@ -33,6 +36,17 @@ export default function Dashboard() {
       .subscribe();
     return () => { unsubLocal(); supabase.removeChannel(ch); };
   }, []);
+
+  const allTags = Array.from(new Set(tasks.flatMap((t) => t.tags ?? []))).sort();
+  const filtered = tasks.filter((t) => {
+    if (statusFilter !== "all" && t.status !== statusFilter) return false;
+    if (tagFilter && !(t.tags ?? []).includes(tagFilter)) return false;
+    if (search) {
+      const q = search.toLowerCase();
+      if (!(t.page_title ?? "").toLowerCase().includes(q) && !(t.url ?? "").toLowerCase().includes(q)) return false;
+    }
+    return true;
+  });
 
   const scored = tasks.filter((task) => task.overall_score != null);
   const stats = {
