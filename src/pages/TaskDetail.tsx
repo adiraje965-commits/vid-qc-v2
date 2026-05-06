@@ -14,9 +14,10 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft, ExternalLink, Loader2, AlertTriangle, ShieldAlert, Activity, Sparkles, Copy, Search, FileText, Upload, Clock3, Gauge, ListChecks, Radio } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 
-const BUCKET_ICONS: Record<string, any> = { technical: Activity, brand: Sparkles, strategic: ShieldAlert, contextual: AlertTriangle };
+const BUCKET_ICONS: Record<string, LucideIcon> = { technical: Activity, brand: Sparkles, strategic: ShieldAlert, contextual: AlertTriangle };
 
 export default function TaskDetail() {
   const { id } = useParams();
