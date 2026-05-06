@@ -188,7 +188,7 @@ Deno.serve(async (req) => {
       medium_count: counts.medium,
       low_count: counts.low,
       key_frames: result.key_frames,
-      transcript: result.transcript ?? [],
+      transcript_status: "pending",
     }).eq("id", taskId);
 
     if (result.issues.length) {
@@ -196,6 +196,16 @@ Deno.serve(async (req) => {
         result.issues.map((i: any) => ({ ...i, task_id: taskId }))
       );
     }
+
+    // Fire-and-forget: kick off real speech-to-text on the actual video.
+    fetch(`${SUPABASE_URL}/functions/v1/transcribe-video`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${SERVICE_ROLE}`,
+      },
+      body: JSON.stringify({ taskId, videoUrl }),
+    }).catch((err) => console.error("transcribe-video invoke failed:", err));
 
     return new Response(JSON.stringify({ ok: true, taskId, overall }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
