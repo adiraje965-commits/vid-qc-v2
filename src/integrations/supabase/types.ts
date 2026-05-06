@@ -82,6 +82,7 @@ export type Database = {
           technical_score: number | null
           thumbnail_url: string | null
           topic_match_score: number | null
+          transcript: Json | null
           updated_at: string
           url: string
           video_count: number | null
@@ -111,6 +112,7 @@ export type Database = {
           technical_score?: number | null
           thumbnail_url?: string | null
           topic_match_score?: number | null
+          transcript?: Json | null
           updated_at?: string
           url: string
           video_count?: number | null
@@ -140,6 +142,7 @@ export type Database = {
           technical_score?: number | null
           thumbnail_url?: string | null
           topic_match_score?: number | null
+          transcript?: Json | null
           updated_at?: string
           url?: string
           video_count?: number | null
