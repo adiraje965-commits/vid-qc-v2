@@ -32,7 +32,7 @@ export function VideoCapture({ taskId, videoUrl, pageContext, autoStart = true, 
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
-    return () => stop(false);
+    return () => { stop(false); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
