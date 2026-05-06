@@ -489,7 +489,15 @@ function TranscriptPanel({
             {showUnsupported && (
               <div className="space-y-1.5">
                 <div className="font-medium text-foreground/80">Transcript not available</div>
-                <div>We couldn't auto-resolve a direct audio file from this URL. Paste a direct .mp4 / .m3u8 below to enable speech-to-text — your player URL stays unchanged.</div>
+                {transcriptError && /403|access denied|forbidden|bot|drm|encrypted/i.test(transcriptError) ? (
+                  <div>
+                    {/drm|encrypted/i.test(transcriptError)
+                      ? "This stream is DRM-protected, so its audio cannot be transcribed."
+                      : "This host blocks automated fetching. Your video still plays above; we tried a rendered-browser fallback but couldn't reach a direct media file. Paste a direct .mp4 / .m3u8 below to enable speech-to-text — your player URL stays unchanged."}
+                  </div>
+                ) : (
+                  <div>We couldn't auto-resolve a direct audio file from this URL. Paste a direct .mp4 / .m3u8 below to enable speech-to-text — your player URL stays unchanged.</div>
+                )}
               </div>
             )}
             {showFailed && (
