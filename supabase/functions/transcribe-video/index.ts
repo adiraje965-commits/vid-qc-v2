@@ -53,12 +53,16 @@ function groupWords(words: Word[]): Segment[] {
   return segs;
 }
 
-async function transcribeWithElevenLabs(videoUrl: string): Promise<Segment[]> {
+async function transcribeWithElevenLabs(videoUrl: string): Promise<Segment[] | { unsupported: true }> {
   // Download the media; ElevenLabs STT expects a multipart file upload.
   const mediaRes = await fetch(videoUrl, { redirect: "follow" });
   if (!mediaRes.ok) throw new Error(`Failed to download video (${mediaRes.status})`);
+  const contentType = mediaRes.headers.get("content-type") ?? "";
+  if (!isMediaContentType(contentType)) {
+    // Got HTML (embed page) or other non-media — can't transcribe.
+    return { unsupported: true };
+  }
   const blob = await mediaRes.blob();
-  const contentType = mediaRes.headers.get("content-type") ?? "video/mp4";
 
   const form = new FormData();
   form.append("file", new File([blob], "video.mp4", { type: contentType }));
