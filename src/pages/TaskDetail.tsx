@@ -184,7 +184,10 @@ export default function TaskDetail() {
 
             {/* Transcript */}
             <TranscriptPanel
+              taskId={task.id}
+              videoUrl={task.video_url}
               transcript={(task.transcript ?? []) as TranscriptSegment[]}
+              transcriptStatus={task.transcript_status}
               currentTime={currentTime}
               isProcessing={isProcessing}
               onSeek={seek}
