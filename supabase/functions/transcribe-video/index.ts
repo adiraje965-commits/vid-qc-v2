@@ -12,7 +12,15 @@ function isUnsupportedSource(url: string | null): boolean {
   if (!url) return true;
   if (/youtube\.com|youtu\.be/i.test(url)) return true;
   if (/vimeo\.com/i.test(url)) return true;
+  // Embed/player pages return HTML, not media — STT can't process them.
+  if (/\/embed(ded)?(\/|\?|$)/i.test(url)) return true;
+  if (/player\./i.test(url)) return true;
   return false;
+}
+
+function isMediaContentType(ct: string): boolean {
+  const t = ct.toLowerCase();
+  return t.startsWith("audio/") || t.startsWith("video/") || t === "application/octet-stream";
 }
 
 function groupWords(words: Word[]): Segment[] {
@@ -45,12 +53,16 @@ function groupWords(words: Word[]): Segment[] {
   return segs;
 }
 
-async function transcribeWithElevenLabs(videoUrl: string): Promise<Segment[]> {
+async function transcribeWithElevenLabs(videoUrl: string): Promise<Segment[] | { unsupported: true }> {
   // Download the media; ElevenLabs STT expects a multipart file upload.
   const mediaRes = await fetch(videoUrl, { redirect: "follow" });
   if (!mediaRes.ok) throw new Error(`Failed to download video (${mediaRes.status})`);
+  const contentType = mediaRes.headers.get("content-type") ?? "";
+  if (!isMediaContentType(contentType)) {
+    // Got HTML (embed page) or other non-media — can't transcribe.
+    return { unsupported: true };
+  }
   const blob = await mediaRes.blob();
-  const contentType = mediaRes.headers.get("content-type") ?? "video/mp4";
 
   const form = new FormData();
   form.append("file", new File([blob], "video.mp4", { type: contentType }));
@@ -95,14 +107,24 @@ Deno.serve(async (req) => {
 
     await supabase.from("qc_tasks").update({ transcript_status: "pending" }).eq("id", taskId);
 
-    const segments = await transcribeWithElevenLabs(videoUrl as string);
+    const result = await transcribeWithElevenLabs(videoUrl as string);
+
+    if ("unsupported" in result) {
+      await supabase.from("qc_tasks").update({
+        transcript: [],
+        transcript_status: "unsupported_source",
+      }).eq("id", taskId);
+      return new Response(JSON.stringify({ ok: true, status: "unsupported_source" }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
 
     await supabase.from("qc_tasks").update({
-      transcript: segments,
+      transcript: result,
       transcript_status: "ready",
     }).eq("id", taskId);
 
-    return new Response(JSON.stringify({ ok: true, count: segments.length }), {
+    return new Response(JSON.stringify({ ok: true, count: result.length }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (e) {
