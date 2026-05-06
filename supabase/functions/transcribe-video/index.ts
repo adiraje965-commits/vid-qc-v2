@@ -17,6 +17,13 @@ const BROWSER_HEADERS: Record<string, string> = {
 interface Word { text: string; start: number; end: number; speaker_id?: string; type?: string }
 interface Segment { start: number; end: number; text: string; speaker?: string }
 
+class ElevenLabsConfigurationError extends Error {
+  constructor(message = "ElevenLabs API key is invalid or missing speech-to-text access.") {
+    super(message);
+    this.name = "ElevenLabsConfigurationError";
+  }
+}
+
 type ResolvedMedia =
   | { kind: "mp4"; url: string }
   | { kind: "hls"; url: string }
@@ -477,7 +484,13 @@ async function transcribeBlobWithElevenLabs(blob: Blob, filename: string, conten
     headers: { "xi-api-key": ELEVENLABS_API_KEY },
     body: form,
   });
-  if (!res.ok) throw new Error(`ElevenLabs STT ${res.status}: ${await res.text()}`);
+  if (!res.ok) {
+    const errorText = await res.text();
+    if (res.status === 401 && /invalid_api_key|missing_permissions|speech_to_text/i.test(errorText)) {
+      throw new ElevenLabsConfigurationError();
+    }
+    throw new Error(`ElevenLabs STT ${res.status}: ${errorText}`);
+  }
   const data = await res.json();
   const words: Word[] = data.words ?? [];
   if (!words.length && data.text) return [{ start: 0, end: 0, text: data.text }];
@@ -687,6 +700,22 @@ Deno.serve(async (req) => {
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("transcribe-video error:", msg);
+    if (e instanceof ElevenLabsConfigurationError) {
+      if (taskId) {
+        await supabase.from("qc_tasks").update({
+          transcript_status: "unsupported_source",
+          transcript: [],
+          error_message: "ElevenLabs speech-to-text is not available with the configured API key. Add a valid key with speech_to_text permission, or paste/import a transcript manually.",
+        }).eq("id", taskId);
+      }
+      return new Response(JSON.stringify({
+        ok: true,
+        status: "unsupported_source",
+        reason: "ElevenLabs speech-to-text is not available with the configured API key.",
+      }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
     if (taskId) {
       await supabase.from("qc_tasks").update({
         transcript_status: "failed",

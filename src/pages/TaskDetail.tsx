@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
+import type { Json } from "@/integrations/supabase/types";
 import { AppHeader } from "@/components/AppHeader";
 import { BUCKET_LABEL, KeyFrame, QcIssue, QcTask, TranscriptSegment, scoreColor, severityClass, Severity } from "@/lib/qc-types";
 import { getLocalTask, isLocalId, listLocalIssues, parseTranscriptText, subscribeLocalQc, updateLocalTranscript } from "@/lib/local-qc";
@@ -13,9 +14,10 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft, ExternalLink, Loader2, AlertTriangle, ShieldAlert, Activity, Sparkles, Copy, Search, FileText, Upload, Clock3, Gauge, ListChecks, Radio } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 
-const BUCKET_ICONS: Record<string, any> = { technical: Activity, brand: Sparkles, strategic: ShieldAlert, contextual: AlertTriangle };
+const BUCKET_ICONS: Record<string, LucideIcon> = { technical: Activity, brand: Sparkles, strategic: ShieldAlert, contextual: AlertTriangle };
 
 export default function TaskDetail() {
   const { id } = useParams();
@@ -251,7 +253,7 @@ export default function TaskDetail() {
                 if (!transcript.length) throw new Error("No transcript lines detected.");
                 const { error } = await supabase
                   .from("qc_tasks")
-                  .update({ transcript, transcript_status: "ready", error_message: null })
+                  .update({ transcript: transcript as unknown as Json, transcript_status: "ready", error_message: null })
                   .eq("id", task.id);
                 if (error) throw error;
               }}
