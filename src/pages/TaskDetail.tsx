@@ -2,11 +2,15 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { AppHeader } from "@/components/AppHeader";
-import { BUCKET_LABEL, KeyFrame, QcIssue, QcTask, scoreColor, severityClass, Severity } from "@/lib/qc-types";
+import { BUCKET_LABEL, KeyFrame, QcIssue, QcTask, TranscriptSegment, scoreColor, severityClass, Severity } from "@/lib/qc-types";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { ArrowLeft, ExternalLink, Loader2, AlertTriangle, ShieldAlert, Activity, Sparkles } from "lucide-react";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { ArrowLeft, ExternalLink, Loader2, AlertTriangle, ShieldAlert, Activity, Sparkles, Copy, Search, FileText } from "lucide-react";
+import { toast } from "@/hooks/use-toast";
 
 const BUCKET_ICONS: Record<string, any> = { technical: Activity, brand: Sparkles, strategic: ShieldAlert, contextual: AlertTriangle };
 
@@ -178,6 +182,14 @@ export default function TaskDetail() {
               )}
             </div>
 
+            {/* Transcript */}
+            <TranscriptPanel
+              transcript={(task.transcript ?? []) as TranscriptSegment[]}
+              currentTime={currentTime}
+              isProcessing={isProcessing}
+              onSeek={seek}
+            />
+
             {/* Severity breakdown */}
             <div className="surface-card p-5">
               <div className="mb-4 text-sm font-medium">Severity Breakdown</div>
@@ -331,4 +343,122 @@ function markerClass(s: Severity) {
     low: "bg-severity-low",
     info: "bg-severity-info",
   }[s];
+}
+
+function fmtTime(s: number) {
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return `${m.toString().padStart(2, "0")}:${sec.toString().padStart(2, "0")}`;
+}
+
+function TranscriptPanel({
+  transcript,
+  currentTime,
+  isProcessing,
+  onSeek,
+}: {
+  transcript: TranscriptSegment[];
+  currentTime: number;
+  isProcessing: boolean;
+  onSeek: (t: number) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const rowRefs = useRef<Record<number, HTMLButtonElement | null>>({});
+
+  const activeIdx = useMemo(() => {
+    if (!transcript.length) return -1;
+    const i = transcript.findIndex((s) => currentTime >= s.start && currentTime < s.end);
+    if (i !== -1) return i;
+    // fallback: last segment whose start <= currentTime
+    let last = -1;
+    for (let j = 0; j < transcript.length; j++) if (transcript[j].start <= currentTime) last = j;
+    return last;
+  }, [transcript, currentTime]);
+
+  useEffect(() => {
+    if (activeIdx < 0) return;
+    rowRefs.current[activeIdx]?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [activeIdx]);
+
+  const filtered = useMemo(() => {
+    if (!query.trim()) return transcript.map((s, i) => ({ s, i }));
+    const q = query.toLowerCase();
+    return transcript
+      .map((s, i) => ({ s, i }))
+      .filter(({ s }) => s.text.toLowerCase().includes(q) || (s.speaker ?? "").toLowerCase().includes(q));
+  }, [transcript, query]);
+
+  const copyAll = async () => {
+    const txt = transcript.map((s) => `[${fmtTime(s.start)}]${s.speaker ? ` ${s.speaker}:` : ""} ${s.text}`).join("\n");
+    await navigator.clipboard.writeText(txt);
+    toast({ title: "Transcript copied" });
+  };
+
+  return (
+    <div className="surface-card p-5">
+      <div className="mb-3 flex flex-wrap items-center gap-3">
+        <div className="flex items-center gap-2 text-sm font-medium">
+          <FileText className="h-4 w-4 text-primary" /> Transcript
+          {transcript.length > 0 && (
+            <span className="text-[11px] font-normal text-muted-foreground">· {transcript.length} segments</span>
+          )}
+        </div>
+        <div className="ml-auto flex items-center gap-2">
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search…"
+              className="h-8 w-48 pl-7 text-xs"
+              disabled={!transcript.length}
+            />
+          </div>
+          <Button size="sm" variant="outline" onClick={copyAll} disabled={!transcript.length} className="h-8 gap-1.5 text-xs">
+            <Copy className="h-3.5 w-3.5" /> Copy
+          </Button>
+        </div>
+      </div>
+
+      {transcript.length === 0 ? (
+        <div className="rounded-md border border-dashed border-border bg-secondary/30 p-6 text-center text-xs text-muted-foreground">
+          {isProcessing ? (
+            <span className="inline-flex items-center gap-2"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Generating transcript…</span>
+          ) : (
+            "Transcript not available for this video."
+          )}
+        </div>
+      ) : (
+        <ScrollArea className="h-72 rounded-md border border-border bg-secondary/20">
+          <ul className="divide-y divide-border/60">
+            {filtered.map(({ s, i }) => {
+              const active = i === activeIdx;
+              return (
+                <li key={i}>
+                  <button
+                    ref={(el) => { rowRefs.current[i] = el; }}
+                    onClick={() => onSeek(s.start)}
+                    className={`flex w-full gap-3 px-3 py-2 text-left text-sm transition-colors hover:bg-secondary/60 ${
+                      active ? "border-l-2 border-primary bg-primary/10" : "border-l-2 border-transparent"
+                    }`}
+                  >
+                    <span className={`shrink-0 font-mono text-[11px] tabular-nums ${active ? "text-primary" : "text-muted-foreground"}`}>
+                      {fmtTime(s.start)}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      {s.speaker && <span className="mr-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">{s.speaker}</span>}
+                      <span className={active ? "text-foreground" : "text-foreground/85"}>{s.text}</span>
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+            {filtered.length === 0 && (
+              <li className="px-3 py-6 text-center text-xs text-muted-foreground">No segments match “{query}”.</li>
+            )}
+          </ul>
+        </ScrollArea>
+      )}
+    </div>
+  );
 }

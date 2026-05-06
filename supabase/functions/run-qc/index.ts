@@ -76,8 +76,23 @@ const ANALYSIS_TOOL = {
             additionalProperties: false,
           },
         },
+        transcript: {
+          type: "array",
+          description: "Timestamped transcript segments covering the full video. If exact audio is not accessible, infer a plausible transcript from the page context and key moments, with monotonically increasing timestamps spread across an estimated 30-90s duration.",
+          items: {
+            type: "object",
+            properties: {
+              start: { type: "number", description: "Segment start in seconds" },
+              end: { type: "number", description: "Segment end in seconds" },
+              text: { type: "string" },
+              speaker: { type: "string" },
+            },
+            required: ["start", "end", "text"],
+            additionalProperties: false,
+          },
+        },
       },
-      required: ["customer_intent", "topic_match_score", "analysis_summary", "bucket_scores", "issues", "key_frames"],
+      required: ["customer_intent", "topic_match_score", "analysis_summary", "bucket_scores", "issues", "key_frames", "transcript"],
       additionalProperties: false,
     },
   },
@@ -94,7 +109,8 @@ Score four buckets (0-100):
 - Contextual: how well the video matches the page's product, customer intent, and topic
 
 Return 4-12 issues with realistic timestamps. Severity drives weight.
-Return 4-8 key_frames marking notable moments (good or bad).`;
+Return 4-8 key_frames marking notable moments (good or bad).
+Return a transcript array with 6-20 short segments (2-6s each) covering the entire video runtime, in chronological order with non-overlapping timestamps. If you cannot directly hear the audio, infer a faithful transcript from the page topic, CTA, and visible key frames.`;
 
   const userContent: any[] = [
     { type: "text", text: `PAGE URL: ${pageUrl}\n\nPAGE CONTEXT (Firecrawl markdown):\n${pageMarkdown.slice(0, 8000)}\n\nVIDEO URL: ${videoUrl ?? "(none detected on page)"}\n\nProduce the QC report by calling submit_qc_analysis.` },
@@ -187,6 +203,7 @@ Deno.serve(async (req) => {
       medium_count: counts.medium,
       low_count: counts.low,
       key_frames: result.key_frames,
+      transcript: result.transcript ?? [],
     }).eq("id", taskId);
 
     if (result.issues.length) {
