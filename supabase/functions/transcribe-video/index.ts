@@ -806,18 +806,34 @@ Deno.serve(async (req) => {
         segments = await transcribeBytesWithGemini(bytes, mp4Res.headers.get("content-type") ?? "video/mp4");
       }
     } else {
-      // HLS path: download .ts segments, extract MP3 with WASM ffmpeg, then transcribe.
+      // HLS path: download .ts → ffmpeg WASM → MP3 → upload to public bucket → ElevenLabs cloud_storage_url
+      let uploadedPath: string | null = null;
       try {
         const tsBytes = await downloadHlsBytes(resolved.url);
         console.log(`HLS downloaded: ${tsBytes.byteLength} bytes; extracting MP3 with ffmpeg-wasm…`);
         const mp3Bytes = await extractMp3FromBytes(tsBytes, "input.ts");
-        console.log(`MP3 extracted: ${mp3Bytes.byteLength} bytes; sending to ElevenLabs…`);
+        console.log(`MP3 extracted: ${mp3Bytes.byteLength} bytes; uploading to storage…`);
+
+        const objectPath = `${taskId}/${crypto.randomUUID()}.mp3`;
+        const { error: upErr } = await supabase.storage
+          .from("transcribe-audio")
+          .upload(objectPath, mp3Bytes, { contentType: "audio/mpeg", upsert: true });
+        if (upErr) throw new Error(`Storage upload failed: ${upErr.message}`);
+        uploadedPath = objectPath;
+        const { data: pub } = supabase.storage.from("transcribe-audio").getPublicUrl(objectPath);
+        const publicMp3Url = pub.publicUrl;
+        console.log(`MP3 public URL: ${publicMp3Url}; sending to ElevenLabs…`);
+
         try {
-          segments = await transcribeBlobWithElevenLabs(
-            new Blob([mp3Bytes], { type: "audio/mpeg" }),
-            "audio.mp3",
-            "audio/mpeg",
-          );
+          segments = await transcribeUrlWithElevenLabs(publicMp3Url);
+          if (!segments.length) {
+            console.log("cloud_storage_url returned 0 segments; uploading bytes directly.");
+            segments = await transcribeBlobWithElevenLabs(
+              new Blob([mp3Bytes], { type: "audio/mpeg" }),
+              "audio.mp3",
+              "audio/mpeg",
+            );
+          }
         } catch (err) {
           if (err instanceof ElevenLabsConfigurationError) throw err;
           console.warn("ElevenLabs MP3 failed, falling back to Gemini:", err instanceof Error ? err.message : String(err));
@@ -825,16 +841,22 @@ Deno.serve(async (req) => {
         }
       } catch (err) {
         if (err instanceof ElevenLabsConfigurationError) throw err;
-        console.warn("ffmpeg MP3 extraction failed, falling back to legacy HLS path:", err instanceof Error ? err.message : String(err));
+        console.warn("MP3 pipeline failed, falling back to legacy/Gemini:", err instanceof Error ? err.message : String(err));
         try {
           segments = await transcribeHlsWithElevenLabs(resolved.url);
         } catch (err2) {
           if (err2 instanceof ElevenLabsConfigurationError) throw err2;
-          console.warn("Legacy HLS path failed too, falling back to Gemini on raw bytes:", err2 instanceof Error ? err2.message : String(err2));
+          console.warn("Legacy HLS path failed:", err2 instanceof Error ? err2.message : String(err2));
         }
         if (!segments.length) {
           const bytes = await downloadHlsBytes(resolved.url);
           segments = await transcribeBytesWithGemini(bytes, "video/mp2t");
+        }
+      } finally {
+        if (uploadedPath) {
+          supabase.storage.from("transcribe-audio").remove([uploadedPath])
+            .then(() => console.log(`Cleaned up ${uploadedPath}`))
+            .catch((e) => console.warn("Cleanup failed:", e));
         }
       }
     }
