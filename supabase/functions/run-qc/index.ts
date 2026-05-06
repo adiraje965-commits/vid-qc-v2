@@ -197,15 +197,8 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Fire-and-forget: kick off real speech-to-text on the actual video.
-    fetch(`${SUPABASE_URL}/functions/v1/transcribe-video`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${SERVICE_ROLE}`,
-      },
-      body: JSON.stringify({ taskId, videoUrl }),
-    }).catch((err) => console.error("transcribe-video invoke failed:", err));
+    // Browser-side VideoCapture component now drives transcription + visual frame QC.
+    // Server-side transcribe-video is kept as a manual fallback only.
 
     return new Response(JSON.stringify({ ok: true, taskId, overall }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
