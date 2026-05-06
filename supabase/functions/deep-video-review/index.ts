@@ -136,10 +136,17 @@ Deno.serve(async (req) => {
 
     // 1) Download video bytes
     console.log("Downloading video:", videoUrl);
-    const vRes = await fetch(videoUrl, { headers: { "User-Agent": "Mozilla/5.0 LovableQC/1.0", Accept: "*/*" } });
+    const vRes = await fetch(videoUrl, { redirect: "follow", headers: { "User-Agent": "Mozilla/5.0 LovableQC/1.0", Accept: "video/*,*/*" } });
     if (!vRes.ok) throw new Error(`Could not fetch video (${vRes.status}). Host may block server-side downloads — try Live Capture.`);
-    const ct = (vRes.headers.get("content-type") || "video/mp4").split(";")[0].trim();
-    if (!/^video\//i.test(ct)) throw new Error(`URL did not return a video (content-type: ${ct}). Use a direct .mp4/.webm URL.`);
+    let ct = (vRes.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+    const urlExt = videoUrl.split("?")[0].split("#")[0].toLowerCase();
+    const looksLikeVideoUrl = /\.(mp4|webm|mov|m4v|mkv)$/.test(urlExt);
+    if (!ct || ct === "application/octet-stream" || /^binary\//.test(ct)) {
+      ct = looksLikeVideoUrl ? (urlExt.endsWith(".webm") ? "video/webm" : "video/mp4") : ct || "video/mp4";
+    }
+    if (!/^video\//i.test(ct)) {
+      throw new Error(`URL returned ${ct || "unknown content-type"} (not a video). The link is probably a webpage/iframe player, not a direct file. Right-click the actual video and copy its direct .mp4/.webm URL, or use Live Capture for embedded players.`);
+    }
     const buf = new Uint8Array(await vRes.arrayBuffer());
     console.log(`Downloaded ${(buf.byteLength / 1024 / 1024).toFixed(1)} MB`);
 
