@@ -359,6 +359,8 @@ function fmtTime(s: number) {
 function TranscriptPanel({
   taskId,
   videoUrl,
+  mediaUrl,
+  mediaKind,
   transcript,
   transcriptStatus,
   currentTime,
@@ -367,6 +369,8 @@ function TranscriptPanel({
 }: {
   taskId: string;
   videoUrl: string | null;
+  mediaUrl: string | null;
+  mediaKind: "mp4" | "hls" | null;
   transcript: TranscriptSegment[];
   transcriptStatus: QcTask["transcript_status"];
   currentTime: number;
@@ -375,7 +379,9 @@ function TranscriptPanel({
 }) {
   const [query, setQuery] = useState("");
   const [retrying, setRetrying] = useState(false);
+  const [overrideUrl, setOverrideUrl] = useState("");
   const rowRefs = useRef<Record<number, HTMLButtonElement | null>>({});
+
 
   const activeIdx = useMemo(() => {
     if (!transcript.length) return -1;
