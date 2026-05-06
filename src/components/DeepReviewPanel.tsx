@@ -38,14 +38,14 @@ export function DeepReviewPanel({ taskId, videoUrl, pageContext }: Props) {
         <div className="flex items-center gap-2">
           <Eye className="h-4 w-4 text-primary" />
           <div className="text-sm font-medium">Deep Video Review</div>
-          <Badge variant="outline" className="border-primary/40 text-primary">Gemini 2.5 Pro · native video</Badge>
+          <Badge variant="outline" className="border-primary/40 text-primary">Gemini 2.5 Pro · Files API (up to 2GB / 1hr)</Badge>
         </div>
         <Button size="sm" onClick={run} disabled={running}>
           {running ? <><Loader2 className="mr-1 h-3 w-3 animate-spin" />Watching video…</> : "Run Deep Review"}
         </Button>
       </div>
       <p className="mb-2 text-xs text-muted-foreground">
-        Server downloads the actual video and lets the AI watch it end-to-end (visual + audio + supers + pacing). Replaces previous QC findings with real ones. Works for direct mp4/webm URLs up to 20 MB.
+        Server downloads the actual video, uploads it to Google AI's Files API, and lets Gemini 2.5 Pro watch it end-to-end (visual + audio + supers + pacing). Supports videos up to ~2GB / 1hr. Replaces previous QC findings with real ones.
       </p>
       <div className="flex items-center gap-2">
         <label className="text-[11px] uppercase tracking-wider text-muted-foreground">Persona</label>
