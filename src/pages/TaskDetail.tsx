@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
+import type { Json } from "@/integrations/supabase/types";
 import { AppHeader } from "@/components/AppHeader";
 import { BUCKET_LABEL, KeyFrame, QcIssue, QcTask, TranscriptSegment, scoreColor, severityClass, Severity } from "@/lib/qc-types";
 import { getLocalTask, isLocalId, listLocalIssues, parseTranscriptText, subscribeLocalQc, updateLocalTranscript } from "@/lib/local-qc";
@@ -251,7 +252,7 @@ export default function TaskDetail() {
                 if (!transcript.length) throw new Error("No transcript lines detected.");
                 const { error } = await supabase
                   .from("qc_tasks")
-                  .update({ transcript, transcript_status: "ready", error_message: null })
+                  .update({ transcript: transcript as unknown as Json, transcript_status: "ready", error_message: null })
                   .eq("id", task.id);
                 if (error) throw error;
               }}
