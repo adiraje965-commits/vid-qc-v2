@@ -190,6 +190,7 @@ export default function TaskDetail() {
               mediaKind={task.media_kind}
               transcript={(task.transcript ?? []) as TranscriptSegment[]}
               transcriptStatus={task.transcript_status}
+              transcriptError={task.error_message}
               currentTime={currentTime}
               isProcessing={isProcessing}
               onSeek={seek}
