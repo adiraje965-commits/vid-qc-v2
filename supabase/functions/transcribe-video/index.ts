@@ -12,7 +12,15 @@ function isUnsupportedSource(url: string | null): boolean {
   if (!url) return true;
   if (/youtube\.com|youtu\.be/i.test(url)) return true;
   if (/vimeo\.com/i.test(url)) return true;
+  // Embed/player pages return HTML, not media — STT can't process them.
+  if (/\/embed(ded)?(\/|\?|$)/i.test(url)) return true;
+  if (/player\./i.test(url)) return true;
   return false;
+}
+
+function isMediaContentType(ct: string): boolean {
+  const t = ct.toLowerCase();
+  return t.startsWith("audio/") || t.startsWith("video/") || t === "application/octet-stream";
 }
 
 function groupWords(words: Word[]): Segment[] {
