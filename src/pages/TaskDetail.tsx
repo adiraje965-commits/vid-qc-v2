@@ -182,6 +182,14 @@ export default function TaskDetail() {
               )}
             </div>
 
+            {/* Transcript */}
+            <TranscriptPanel
+              transcript={(task.transcript ?? []) as TranscriptSegment[]}
+              currentTime={currentTime}
+              isProcessing={isProcessing}
+              onSeek={seek}
+            />
+
             {/* Severity breakdown */}
             <div className="surface-card p-5">
               <div className="mb-4 text-sm font-medium">Severity Breakdown</div>
