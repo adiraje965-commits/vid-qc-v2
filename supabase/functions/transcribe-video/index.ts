@@ -690,9 +690,20 @@ Deno.serve(async (req) => {
       media_kind: resolved.kind,
     }).eq("id", taskId);
 
-    const segments = resolved.kind === "mp4"
-      ? await transcribeMp4WithElevenLabs(resolved.url)
-      : await transcribeHlsWithElevenLabs(resolved.url);
+    let segments: Segment[] = [];
+    if (resolved.kind === "mp4") {
+      segments = await transcribeMp4WithElevenLabs(resolved.url);
+    } else {
+      try {
+        segments = await transcribeHlsWithElevenLabs(resolved.url);
+      } catch (hlsErr) {
+        console.warn("HLS->ElevenLabs failed, will try Gemini:", hlsErr instanceof Error ? hlsErr.message : String(hlsErr));
+      }
+      if (!segments.length) {
+        console.log("HLS produced no segments via ElevenLabs, falling back to Gemini.");
+        segments = await transcribeHlsWithGemini(resolved.url);
+      }
+    }
 
     await supabase.from("qc_tasks").update({
       transcript: segments,
