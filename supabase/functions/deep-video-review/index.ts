@@ -1,81 +1,68 @@
-// deep-video-review: REAL video QC.
-// Downloads the video server-side, sends raw bytes to Gemini 2.5 Pro via the
-// Lovable AI Gateway as native video input (not sampled frames), and lets the
-// model "watch" it like a human reviewer would — visuals, audio, pacing,
-// supers, disclaimers, brand cues, all in one pass.
+// deep-video-review: REAL video QC using Google AI Files API.
+// Supports videos up to ~2GB / 1hr. Server-side downloads the video,
+// uploads to Google's File API (resumable), polls until ACTIVE, then
+// asks Gemini 2.5 Pro to actually watch it (visuals + audio + supers).
 
 import { corsHeaders } from "https://esm.sh/@supabase/supabase-js@2.95.0/cors";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.95.0";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY")!;
+const GOOGLE_AI_API_KEY = Deno.env.get("GOOGLE_AI_API_KEY")!;
 
-const MAX_BYTES = 20 * 1024 * 1024; // 20 MB inline limit
-
+const MODEL = "gemini-2.5-pro";
 const SEVERITY_WEIGHTS: Record<string, number> = { critical: 25, high: 15, medium: 8, low: 3 };
 
-const TOOL = {
-  type: "function",
-  function: {
-    name: "submit_video_qc",
-    description: "Real Video QC report after watching the actual video end-to-end.",
-    parameters: {
+const QC_SCHEMA = {
+  type: "object",
+  properties: {
+    analysis_summary: { type: "string" },
+    what_a_user_feels: { type: "string" },
+    customer_intent: { type: "string" },
+    topic_match_score: { type: "integer" },
+    bucket_scores: {
       type: "object",
       properties: {
-        analysis_summary: { type: "string", description: "2-3 sentence honest take from a senior QC reviewer who just watched the video." },
-        what_a_user_feels: { type: "string", description: "First-person, persona-style impression: what a real customer notices, gets confused by, trusts, or doubts." },
-        customer_intent: { type: "string" },
-        topic_match_score: { type: "integer", minimum: 0, maximum: 100 },
-        bucket_scores: {
-          type: "object",
-          properties: {
-            technical: { type: "integer", minimum: 0, maximum: 100 },
-            brand: { type: "integer", minimum: 0, maximum: 100 },
-            strategic: { type: "integer", minimum: 0, maximum: 100 },
-            contextual: { type: "integer", minimum: 0, maximum: 100 },
-          },
-          required: ["technical", "brand", "strategic", "contextual"],
-          additionalProperties: false,
-        },
-        issues: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              bucket: { type: "string", enum: ["technical", "brand", "strategic", "contextual"] },
-              severity: { type: "string", enum: ["critical", "high", "medium", "low"] },
-              timestamp_sec: { type: "number", description: "Real timestamp in the video where the issue occurs." },
-              title: { type: "string" },
-              description: { type: "string", description: "Cite exactly what is on screen / heard at that moment." },
-              suggested_fix: { type: "string" },
-            },
-            required: ["bucket", "severity", "timestamp_sec", "title", "description", "suggested_fix"],
-            additionalProperties: false,
-          },
-        },
-        key_frames: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              timestamp_sec: { type: "number" },
-              label: { type: "string" },
-              suggested_fix: { type: "string" },
-              severity: { type: "string", enum: ["critical", "high", "medium", "low", "info"] },
-            },
-            required: ["timestamp_sec", "label", "severity"],
-            additionalProperties: false,
-          },
-        },
+        technical: { type: "integer" },
+        brand: { type: "integer" },
+        strategic: { type: "integer" },
+        contextual: { type: "integer" },
       },
-      required: ["analysis_summary", "what_a_user_feels", "customer_intent", "topic_match_score", "bucket_scores", "issues", "key_frames"],
-      additionalProperties: false,
+      required: ["technical", "brand", "strategic", "contextual"],
+    },
+    issues: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          bucket: { type: "string", enum: ["technical", "brand", "strategic", "contextual"] },
+          severity: { type: "string", enum: ["critical", "high", "medium", "low"] },
+          timestamp_sec: { type: "number" },
+          title: { type: "string" },
+          description: { type: "string" },
+          suggested_fix: { type: "string" },
+        },
+        required: ["bucket", "severity", "timestamp_sec", "title", "description", "suggested_fix"],
+      },
+    },
+    key_frames: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          timestamp_sec: { type: "number" },
+          label: { type: "string" },
+          suggested_fix: { type: "string" },
+          severity: { type: "string", enum: ["critical", "high", "medium", "low", "info"] },
+        },
+        required: ["timestamp_sec", "label", "severity"],
+      },
     },
   },
-} as const;
+  required: ["analysis_summary", "what_a_user_feels", "customer_intent", "topic_match_score", "bucket_scores", "issues", "key_frames"],
+};
 
-function computeOverall(b: { technical: number; brand: number; strategic: number; contextual: number }, issues: any[]) {
+function computeOverall(b: any, issues: any[]) {
   const penalty: Record<string, number> = { technical: 0, brand: 0, strategic: 0, contextual: 0 };
   for (const i of issues) penalty[i.bucket] = (penalty[i.bucket] ?? 0) + (SEVERITY_WEIGHTS[i.severity] ?? 0);
   const adj = {
@@ -88,14 +75,51 @@ function computeOverall(b: { technical: number; brand: number; strategic: number
   return { adjusted: adj, overall };
 }
 
-function bytesToBase64(bytes: Uint8Array): string {
-  // Chunked to avoid call-stack blow-ups on large arrays
-  let s = "";
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    s += String.fromCharCode(...bytes.subarray(i, i + chunk));
+// Upload bytes to Google AI Files API (resumable protocol)
+async function uploadToFilesApi(bytes: Uint8Array, mime: string, displayName: string) {
+  const startRes = await fetch(
+    `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${GOOGLE_AI_API_KEY}`,
+    {
+      method: "POST",
+      headers: {
+        "X-Goog-Upload-Protocol": "resumable",
+        "X-Goog-Upload-Command": "start",
+        "X-Goog-Upload-Header-Content-Length": String(bytes.byteLength),
+        "X-Goog-Upload-Header-Content-Type": mime,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ file: { display_name: displayName } }),
+    },
+  );
+  if (!startRes.ok) throw new Error(`Files API start failed (${startRes.status}): ${await startRes.text()}`);
+  const uploadUrl = startRes.headers.get("x-goog-upload-url");
+  if (!uploadUrl) throw new Error("Files API: no upload URL returned");
+
+  const upRes = await fetch(uploadUrl, {
+    method: "POST",
+    headers: {
+      "Content-Length": String(bytes.byteLength),
+      "X-Goog-Upload-Offset": "0",
+      "X-Goog-Upload-Command": "upload, finalize",
+    },
+    body: bytes,
+  });
+  if (!upRes.ok) throw new Error(`Files API upload failed (${upRes.status}): ${await upRes.text()}`);
+  const fileInfo = await upRes.json();
+  return fileInfo.file as { name: string; uri: string; mimeType: string; state: string };
+}
+
+async function waitUntilActive(name: string, timeoutMs = 180_000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/${name}?key=${GOOGLE_AI_API_KEY}`);
+    if (!r.ok) throw new Error(`Files API status check failed: ${await r.text()}`);
+    const f = await r.json();
+    if (f.state === "ACTIVE") return f;
+    if (f.state === "FAILED") throw new Error("Google AI failed to process the video.");
+    await new Promise((res) => setTimeout(res, 3000));
   }
-  return btoa(s);
+  throw new Error("Timed out waiting for video processing.");
 }
 
 Deno.serve(async (req) => {
@@ -104,88 +128,94 @@ Deno.serve(async (req) => {
 
   let taskId: string | undefined;
   try {
+    if (!GOOGLE_AI_API_KEY) throw new Error("GOOGLE_AI_API_KEY is not configured.");
     const body = await req.json();
     taskId = body.taskId;
     const { videoUrl, pageContext, persona } = body;
     if (!taskId || !videoUrl) throw new Error("taskId and videoUrl required");
 
-    // 1) Download video bytes server-side
+    // 1) Download video bytes
+    console.log("Downloading video:", videoUrl);
     const vRes = await fetch(videoUrl, { headers: { "User-Agent": "Mozilla/5.0 LovableQC/1.0", Accept: "*/*" } });
-    if (!vRes.ok) throw new Error(`Could not fetch video (${vRes.status}). Host may block server-side downloads — try Live Capture instead.`);
-    const ct = vRes.headers.get("content-type") || "video/mp4";
+    if (!vRes.ok) throw new Error(`Could not fetch video (${vRes.status}). Host may block server-side downloads — try Live Capture.`);
+    const ct = (vRes.headers.get("content-type") || "video/mp4").split(";")[0].trim();
     if (!/^video\//i.test(ct)) throw new Error(`URL did not return a video (content-type: ${ct}). Use a direct .mp4/.webm URL.`);
-
     const buf = new Uint8Array(await vRes.arrayBuffer());
-    if (buf.byteLength > MAX_BYTES) {
-      throw new Error(`Video is ${(buf.byteLength / 1024 / 1024).toFixed(1)} MB — over the 20 MB inline limit. Use Live Capture for longer videos.`);
-    }
-    const mime = ct.split(";")[0].trim();
-    const dataUrl = `data:${mime};base64,${bytesToBase64(buf)}`;
+    console.log(`Downloaded ${(buf.byteLength / 1024 / 1024).toFixed(1)} MB`);
 
-    // 2) Ask Gemini 2.5 Pro to actually watch the video
-    const systemPrompt = `You are a senior Video QC reviewer for Bajaj Finance, a major Indian financial services brand. You are about to WATCH the actual video (you can see and hear it). Behave like a real human reviewer:
+    // 2) Upload to Google AI Files API
+    const file = await uploadToFilesApi(buf, ct, `qc-${taskId}`);
+    console.log("Uploaded:", file.name, "state:", file.state);
 
-- Watch end-to-end. Note real timestamps for everything you flag.
+    // 3) Wait until ACTIVE (Google processes the video)
+    const active = await waitUntilActive(file.name);
+    console.log("File ACTIVE:", active.uri);
+
+    // 4) Ask Gemini 2.5 Pro to watch it
+    const systemPrompt = `You are a senior Video QC reviewer for Bajaj Finance, a major Indian financial services brand. You can SEE and HEAR the attached video. Behave like a real human reviewer:
+
+- Watch end-to-end. Note REAL timestamps (in seconds) for everything you flag.
 - OCR every super, lower-third, CTA, price, EMI, T&C, RBI line, disclaimer.
-- Listen to the voiceover. Flag voice/visual mismatches, unclear pronunciation, missing call-to-action, missing legal copy.
+- Listen to the voiceover. Flag voice/visual mismatches, unclear pronunciation, missing CTA, missing legal copy.
 - Judge pacing: hook in first 3 seconds? Does the message land? Does the CTA arrive too late?
 - Brand: Bajaj Finance logo present? Brand colors (deep blue / white)? Persona consistent?
 - Be strict. Do NOT invent issues. Only flag what you actually see or hear.
 
-Score buckets 0-100: Technical (resolution, framing, audio clarity, encoding), Brand (logo, colors, typography, legal disclaimers), Strategic (hook, CTA, pacing, narrative), Contextual (matches the landing page intent and product).
+Score buckets 0-100: Technical, Brand, Strategic, Contextual. Return 4-12 grounded issues with REAL timestamps and 4-8 key_frames.`;
 
-Return 4-12 grounded issues with REAL timestamps. Return 4-8 key_frames.`;
+    const userText = `${persona ? `PERSONA: ${persona}\n\n` : ""}LANDING PAGE CONTEXT:\n${(pageContext ?? "").slice(0, 4000)}\n\nWatch the attached video and return your honest QC review as JSON.`;
 
-    const userText = `${persona ? `PERSONA: ${persona}\n\n` : ""}LANDING PAGE CONTEXT:\n${(pageContext ?? "").slice(0, 4000)}\n\nWatch the attached video and call submit_video_qc with your honest review.`;
-
-    const aiRes = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${LOVABLE_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "google/gemini-2.5-pro",
-        messages: [
-          { role: "system", content: systemPrompt },
-          {
-            role: "user",
-            content: [
-              { type: "text", text: userText },
-              { type: "image_url", image_url: { url: dataUrl } },
-            ],
+    const genRes = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GOOGLE_AI_API_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: systemPrompt }] },
+          contents: [
+            {
+              role: "user",
+              parts: [
+                { fileData: { mimeType: active.mimeType, fileUri: active.uri } },
+                { text: userText },
+              ],
+            },
+          ],
+          generationConfig: {
+            responseMimeType: "application/json",
+            responseSchema: QC_SCHEMA,
+            temperature: 0.4,
           },
-        ],
-        tools: [TOOL],
-        tool_choice: { type: "function", function: { name: "submit_video_qc" } },
-      }),
-    });
+        }),
+      },
+    );
 
-    if (aiRes.status === 429) throw new Error("Rate limited by AI gateway. Try again in a minute.");
-    if (aiRes.status === 402) throw new Error("AI credits exhausted. Top up at Settings > Workspace > Usage.");
-    if (!aiRes.ok) {
-      const t = await aiRes.text();
-      throw new Error(`Gemini ${aiRes.status}: ${t.slice(0, 400)}`);
+    if (!genRes.ok) {
+      const t = await genRes.text();
+      throw new Error(`Gemini ${genRes.status}: ${t.slice(0, 500)}`);
     }
-    const data = await aiRes.json();
-    const call = data.choices?.[0]?.message?.tool_calls?.[0];
-    if (!call) throw new Error("Model returned no QC report. Video may not be supported.");
-    const parsed = JSON.parse(call.function.arguments);
+    const gen = await genRes.json();
+    const text = gen.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!text) throw new Error("Gemini returned no content. " + JSON.stringify(gen).slice(0, 300));
+    const parsed = JSON.parse(text);
 
-    // 3) Persist — replace prior issues so dashboard reflects REAL findings
+    // 5) Cleanup uploaded file (best-effort)
+    fetch(`https://generativelanguage.googleapis.com/v1beta/${file.name}?key=${GOOGLE_AI_API_KEY}`, { method: "DELETE" }).catch(() => {});
+
+    // 6) Persist
     await supabase.from("qc_issues").delete().eq("task_id", taskId);
     if (parsed.issues?.length) {
       await supabase.from("qc_issues").insert(parsed.issues.map((i: any) => ({ ...i, task_id: taskId })));
     }
-
     const { adjusted, overall } = computeOverall(parsed.bucket_scores, parsed.issues || []);
     const counts = { critical: 0, high: 0, medium: 0, low: 0 };
     for (const i of parsed.issues || []) (counts as any)[i.severity]++;
-
-    const summary = `${parsed.analysis_summary}\n\nWhat a user feels: ${parsed.what_a_user_feels}`;
 
     await supabase.from("qc_tasks").update({
       status: "completed",
       customer_intent: parsed.customer_intent,
       topic_match_score: parsed.topic_match_score,
-      analysis_summary: summary,
+      analysis_summary: `${parsed.analysis_summary}\n\nWhat a user feels: ${parsed.what_a_user_feels}`,
       technical_score: Math.round(adjusted.technical),
       brand_score: Math.round(adjusted.brand),
       strategic_score: Math.round(adjusted.strategic),
