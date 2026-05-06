@@ -1,9 +1,12 @@
-import { BarChart3, Plus, ShieldCheck } from "lucide-react";
+import { BarChart3, LineChart, ListPlus, LogOut, Plus, ShieldCheck } from "lucide-react";
 import { Link, useLocation } from "react-router-dom";
 import { cn } from "@/lib/utils";
+import { useAuth } from "@/contexts/AuthContext";
+import { Button } from "@/components/ui/button";
 
 export function AppHeader() {
   const loc = useLocation();
+  const { user, isAdmin, signOut } = useAuth();
   return (
     <header className="sticky top-0 z-40 border-b border-white/10 bg-background/88 backdrop-blur-2xl">
       <div className="mx-auto flex h-16 max-w-[1600px] items-center gap-6 px-6">
@@ -19,7 +22,9 @@ export function AppHeader() {
         <nav className="ml-4 flex items-center gap-1 rounded-lg border border-white/8 bg-secondary/30 p-1 text-sm">
           {[
             { to: "/", label: "Dashboard", icon: BarChart3 },
-            { to: "/new", label: "New Analysis", icon: Plus },
+            { to: "/new", label: "New", icon: Plus },
+            { to: "/bulk", label: "Bulk", icon: ListPlus },
+            { to: "/trends", label: "Trends", icon: LineChart },
           ].map((n) => {
             const active = n.to === "/" ? loc.pathname === "/" : loc.pathname.startsWith(n.to);
             const Icon = n.icon;
@@ -38,9 +43,17 @@ export function AppHeader() {
             );
           })}
         </nav>
-        <div className="ml-auto flex items-center gap-2 rounded-md border border-score-good/20 bg-score-good/8 px-2.5 py-1 text-xs text-muted-foreground">
-          <span className="inline-block h-1.5 w-1.5 rounded-full bg-score-good shadow-[0_0_12px_hsl(var(--score-good))]" />
-          QC Engine Online
+        <div className="ml-auto flex items-center gap-3">
+          <div className="hidden items-center gap-2 rounded-md border border-score-good/20 bg-score-good/8 px-2.5 py-1 text-xs text-muted-foreground md:flex">
+            <span className="inline-block h-1.5 w-1.5 rounded-full bg-score-good shadow-[0_0_12px_hsl(var(--score-good))]" />
+            QC Engine Online
+          </div>
+          {user && (
+            <div className="flex items-center gap-2 text-xs">
+              <span className="hidden text-muted-foreground md:inline">{user.email}{isAdmin && " · admin"}</span>
+              <Button size="sm" variant="ghost" onClick={signOut}><LogOut className="h-3.5 w-3.5" /></Button>
+            </div>
+          )}
         </div>
       </div>
     </header>
