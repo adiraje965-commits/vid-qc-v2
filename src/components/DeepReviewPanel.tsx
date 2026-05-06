@@ -38,7 +38,7 @@ export function DeepReviewPanel({ taskId, videoUrl, pageContext }: Props) {
         <div className="flex items-center gap-2">
           <Eye className="h-4 w-4 text-primary" />
           <div className="text-sm font-medium">Deep Video Review</div>
-          <Badge variant="outline" className="border-primary/40 text-primary">Gemini 2.5 Pro · native video</Badge>
+          <Badge variant="outline" className="border-primary/40 text-primary">Gemini 2.5 Pro · Files API (up to 2GB / 1hr)</Badge>
         </div>
         <Button size="sm" onClick={run} disabled={running}>
           {running ? <><Loader2 className="mr-1 h-3 w-3 animate-spin" />Watching video…</> : "Run Deep Review"}
