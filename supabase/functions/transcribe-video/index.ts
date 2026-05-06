@@ -31,7 +31,6 @@ function logResolve(...args: unknown[]) {
 
 function isKnownUnsupported(url: string | null): boolean {
   if (!url) return true;
-  if (/youtube\.com|youtu\.be/i.test(url)) return true;
   if (/vimeo\.com/i.test(url)) return true;
   return false;
 }
@@ -401,19 +400,75 @@ function groupWords(words: Word[]): Segment[] {
   return segs;
 }
 
-async function transcribeMp4WithElevenLabs(mediaUrl: string): Promise<Segment[]> {
-  const mediaRes = await fetch(mediaUrl, {
-    headers: { ...BROWSER_HEADERS, Referer: pageOrigin(mediaUrl) },
-    redirect: "follow",
-  });
-  if (!mediaRes.ok) throw new Error(`Failed to download media (${mediaRes.status})`);
-  const ct = mediaRes.headers.get("content-type") ?? "video/mp4";
-  if (!classifyByContentType(ct)) {
-    throw new Error(`Resolved URL did not return media (content-type: ${ct})`);
+function extractYouTubeId(url: string | null): string | null {
+  if (!url) return null;
+  return url.match(/(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/)?.[1] ?? null;
+}
+
+function decodeEntities(text: string) {
+  return text
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&#x([0-9a-fA-F]+);/g, (_m, hex) => String.fromCodePoint(parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_m, dec) => String.fromCodePoint(parseInt(dec, 10)));
+}
+
+function parseYouTubeTranscriptXml(xml: string): Segment[] {
+  const segments: Segment[] = [];
+  for (const match of xml.matchAll(/<p\s+t="(\d+)"\s+d="(\d+)"[^>]*>([\s\S]*?)<\/p>/g)) {
+    const start = Number(match[1]) / 1000;
+    const end = start + Number(match[2]) / 1000;
+    const text = decodeEntities(match[3].replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim());
+    if (text) segments.push({ start, end, text, speaker: "YouTube captions" });
   }
-  const blob = await mediaRes.blob();
+  if (segments.length) return segments;
+
+  for (const match of xml.matchAll(/<text start="([^"]*)" dur="([^"]*)">([^<]*)<\/text>/g)) {
+    const start = Number(match[1]);
+    const end = start + Number(match[2]);
+    const text = decodeEntities(match[3]).replace(/\s+/g, " ").trim();
+    if (text) segments.push({ start, end, text, speaker: "YouTube captions" });
+  }
+  return segments;
+}
+
+async function transcribeYouTubeCaptions(videoUrl: string): Promise<Segment[] | null> {
+  const videoId = extractYouTubeId(videoUrl);
+  if (!videoId) return null;
+
+  const playerRes = await fetch("https://www.youtube.com/youtubei/v1/player?prettyPrint=false", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "User-Agent": "com.google.android.youtube/20.10.38 (Linux; U; Android 14)",
+    },
+    body: JSON.stringify({
+      context: { client: { clientName: "ANDROID", clientVersion: "20.10.38" } },
+      videoId,
+    }),
+  });
+  if (!playerRes.ok) return null;
+  const player = await playerRes.json();
+  const tracks = player?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+  if (!Array.isArray(tracks) || !tracks.length) return null;
+  const track = tracks.find((t: any) => t.languageCode === "en") ?? tracks[0];
+  const captionUrl = track?.baseUrl;
+  if (!captionUrl || !/^https:\/\/(?:www\.)?youtube\.com\//i.test(captionUrl)) return null;
+
+  const captionRes = await fetch(captionUrl, { headers: BROWSER_HEADERS });
+  if (!captionRes.ok) return null;
+  const xml = await captionRes.text();
+  const segments = parseYouTubeTranscriptXml(xml);
+  return segments.length ? segments : null;
+}
+
+async function transcribeBlobWithElevenLabs(blob: Blob, filename: string, contentType: string): Promise<Segment[]> {
   const form = new FormData();
-  form.append("file", new File([blob], "video.mp4", { type: ct }));
+  form.append("file", new File([blob], filename, { type: contentType }));
   form.append("model_id", "scribe_v1");
   form.append("diarize", "true");
   form.append("timestamps_granularity", "word");
@@ -427,6 +482,53 @@ async function transcribeMp4WithElevenLabs(mediaUrl: string): Promise<Segment[]>
   const words: Word[] = data.words ?? [];
   if (!words.length && data.text) return [{ start: 0, end: 0, text: data.text }];
   return groupWords(words);
+}
+
+async function transcribeMp4WithElevenLabs(mediaUrl: string): Promise<Segment[]> {
+  const mediaRes = await fetch(mediaUrl, {
+    headers: { ...BROWSER_HEADERS, Referer: pageOrigin(mediaUrl) },
+    redirect: "follow",
+  });
+  if (!mediaRes.ok) throw new Error(`Failed to download media (${mediaRes.status})`);
+  const ct = mediaRes.headers.get("content-type") ?? "video/mp4";
+  if (!classifyByContentType(ct)) {
+    throw new Error(`Resolved URL did not return media (content-type: ${ct})`);
+  }
+  const blob = await mediaRes.blob();
+  return transcribeBlobWithElevenLabs(blob, "video.mp4", ct);
+}
+
+async function transcribeHlsWithElevenLabs(hlsUrl: string): Promise<Segment[]> {
+  const manifestRes = await fetch(hlsUrl, { headers: { ...BROWSER_HEADERS, Referer: pageOrigin(hlsUrl) } });
+  if (!manifestRes.ok) throw new Error(`Failed to download HLS manifest (${manifestRes.status})`);
+  const manifest = await manifestRes.text();
+  if (/#EXT-X-KEY:[^\n]*METHOD=(?!NONE)[A-Z0-9-]+/i.test(manifest)) {
+    throw new Error("DRM/encrypted HLS stream cannot be transcribed.");
+  }
+
+  const refs = manifest
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"));
+  if (!refs.length) throw new Error("HLS manifest contains no media segments.");
+  if (refs.some((ref) => /\.m3u8(\?|#|$)/i.test(ref))) {
+    return transcribeHlsWithElevenLabs(absolutize(hlsUrl, refs.find((ref) => /\.m3u8(\?|#|$)/i.test(ref)) ?? refs[0]));
+  }
+
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  const maxBytes = 80 * 1024 * 1024;
+  for (const ref of refs) {
+    const segmentUrl = absolutize(hlsUrl, ref);
+    const res = await fetch(segmentUrl, { headers: { ...BROWSER_HEADERS, Referer: pageOrigin(hlsUrl) } });
+    if (!res.ok) throw new Error(`Failed to download HLS segment (${res.status})`);
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    total += bytes.byteLength;
+    if (total > maxBytes) throw new Error("HLS media is too large to transcribe in one request.");
+    chunks.push(bytes);
+  }
+
+  return transcribeBlobWithElevenLabs(new Blob(chunks, { type: "video/mp2t" }), "kpoint-video.ts", "video/mp2t");
 }
 
 async function transcribeHlsWithGemini(hlsUrl: string): Promise<Segment[]> {
@@ -536,6 +638,23 @@ Deno.serve(async (req) => {
 
     await supabase.from("qc_tasks").update({ transcript_status: "pending" }).eq("id", taskId);
 
+    if (!mediaUrlOverride) {
+      const youtubeSegments = await transcribeYouTubeCaptions(sourceUrl);
+      if (youtubeSegments?.length) {
+        await supabase.from("qc_tasks").update({
+          transcript: youtubeSegments,
+          transcript_status: "ready",
+          media_url: sourceUrl,
+          media_kind: null,
+          error_message: null,
+        }).eq("id", taskId);
+
+        return new Response(JSON.stringify({ ok: true, count: youtubeSegments.length, kind: "youtube-captions" }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+    }
+
     const resolved = await resolveMediaUrl(sourceUrl);
     if (resolved.kind === "none") {
       await supabase.from("qc_tasks").update({
@@ -554,7 +673,7 @@ Deno.serve(async (req) => {
 
     const segments = resolved.kind === "mp4"
       ? await transcribeMp4WithElevenLabs(resolved.url)
-      : await transcribeHlsWithGemini(resolved.url);
+      : await transcribeHlsWithElevenLabs(resolved.url);
 
     await supabase.from("qc_tasks").update({
       transcript: segments,
