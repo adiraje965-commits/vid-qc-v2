@@ -3,13 +3,16 @@ import { Link, useParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { AppHeader } from "@/components/AppHeader";
 import { BUCKET_LABEL, KeyFrame, QcIssue, QcTask, TranscriptSegment, scoreColor, severityClass, Severity } from "@/lib/qc-types";
+import { getLocalTask, isLocalId, listLocalIssues, parseTranscriptText, subscribeLocalQc, updateLocalTranscript } from "@/lib/local-qc";
+import { pullLocalTranscript, transcriptSegmentsToText } from "@/lib/transcript-client";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, ExternalLink, Loader2, AlertTriangle, ShieldAlert, Activity, Sparkles, Copy, Search, FileText } from "lucide-react";
+import { ArrowLeft, ExternalLink, Loader2, AlertTriangle, ShieldAlert, Activity, Sparkles, Copy, Search, FileText, Upload, Clock3, Gauge, ListChecks, Radio } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 
 const BUCKET_ICONS: Record<string, any> = { technical: Activity, brand: Sparkles, strategic: ShieldAlert, contextual: AlertTriangle };
@@ -25,6 +28,11 @@ export default function TaskDetail() {
   useEffect(() => {
     if (!id) return;
     const load = async () => {
+      if (isLocalId(id)) {
+        setTask(getLocalTask(id));
+        setIssues(listLocalIssues(id));
+        return;
+      }
       const [{ data: t }, { data: is }] = await Promise.all([
         supabase.from("qc_tasks").select("*").eq("id", id).maybeSingle(),
         supabase.from("qc_issues").select("*").eq("task_id", id).order("timestamp_sec", { ascending: true, nullsFirst: false }),
@@ -33,6 +41,7 @@ export default function TaskDetail() {
       if (is) setIssues(is as unknown as QcIssue[]);
     };
     load();
+    if (isLocalId(id)) return subscribeLocalQc(load);
     const ch = supabase.channel(`task_${id}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "qc_tasks", filter: `id=eq.${id}` }, () => load())
       .on("postgres_changes", { event: "*", schema: "public", table: "qc_issues", filter: `task_id=eq.${id}` }, () => load())
@@ -67,6 +76,9 @@ export default function TaskDetail() {
   }
 
   const isProcessing = task.status === "processing";
+  const score = task.overall_score ?? 0;
+  const verdict = getVerdict(task.overall_score, task.status);
+  const totalIssues = issues.length;
   const sevCounts: { s: Severity; n: number; label: string }[] = [
     { s: "critical", n: task.critical_count, label: "Critical" },
     { s: "high", n: task.high_count, label: "High" },
@@ -85,22 +97,49 @@ export default function TaskDetail() {
           <ArrowLeft className="h-4 w-4" /> Back to video list for this URL
         </Link>
 
-        <div className="mt-3 flex flex-wrap items-end justify-between gap-3">
-          <div className="min-w-0">
-            <h1 className="truncate text-2xl font-semibold tracking-tight">{task.page_title ?? "Untitled page"}</h1>
-            <a href={task.url} target="_blank" rel="noreferrer" className="mt-1 inline-flex items-center gap-1.5 truncate text-sm text-muted-foreground hover:text-primary">
-              {task.url} <ExternalLink className="h-3.5 w-3.5" />
-            </a>
-          </div>
-          <div className="flex items-center gap-3">
-            <div className="text-right">
-              <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Overall Score</div>
-              <div className={`text-4xl font-semibold ${scoreColor(task.overall_score)}`}>
-                {task.overall_score ?? (isProcessing ? "—" : "—")}<span className="text-base text-muted-foreground">/100</span>
+        <section className="workstation-panel soft-grid mt-4 overflow-hidden p-5">
+          <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant="outline" className={`border-current/30 ${verdict.className}`}>
+                  {isProcessing ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <Radio className="mr-1 h-3 w-3" />}
+                  {verdict.label}
+                </Badge>
+                <Badge variant="outline" className="border-primary/30 bg-primary/10 text-primary">
+                  {task.id.startsWith("local_") ? "Local fallback" : "Cloud analysis"}
+                </Badge>
+                {task.transcript_status === "ready" && (
+                  <Badge variant="outline" className="border-score-good/30 text-score-good">Transcript ready</Badge>
+                )}
+              </div>
+              <h1 className="mt-4 max-w-4xl truncate text-3xl font-semibold tracking-tight">{task.page_title ?? "Untitled page"}</h1>
+              <a href={task.url} target="_blank" rel="noreferrer" className="mt-2 inline-flex max-w-full items-center gap-1.5 truncate text-sm text-muted-foreground hover:text-primary">
+                {task.url} <ExternalLink className="h-3.5 w-3.5 shrink-0" />
+              </a>
+            </div>
+            <div className="metric-panel flex min-w-[220px] items-center gap-4 p-4">
+              <div
+                className="grid h-20 w-20 place-items-center rounded-full"
+                style={{ background: `conic-gradient(hsl(var(${scoreCssVar(score)})) ${score * 3.6}deg, hsl(var(--secondary)) 0deg)` }}
+              >
+                <div className="grid h-16 w-16 place-items-center rounded-full bg-background">
+                  <span className={`text-2xl font-semibold ${scoreColor(task.overall_score)}`}>{task.overall_score ?? "--"}</span>
+                </div>
+              </div>
+              <div>
+                <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Overall Score</div>
+                <div className={`mt-1 text-lg font-semibold ${scoreColor(task.overall_score)}`}>{verdict.short}</div>
+                <div className="text-xs text-muted-foreground">weighted across 4 buckets</div>
               </div>
             </div>
           </div>
-        </div>
+          <div className="mt-5 grid grid-cols-2 gap-3 xl:grid-cols-4">
+            <MiniMetric icon={ListChecks} label="Total Issues" value={totalIssues} />
+            <MiniMetric icon={ShieldAlert} label="Critical" value={task.critical_count} tone="bad" />
+            <MiniMetric icon={Gauge} label="Topic Match" value={task.topic_match_score ?? "--"} suffix={task.topic_match_score == null ? "" : "/100"} />
+            <MiniMetric icon={Clock3} label="Transcript" value={formatStatus(task.transcript_status ?? "pending")} />
+          </div>
+        </section>
 
         {task.status === "failed" && (
           <div className="surface-card mt-4 border-severity-critical/40 p-4 text-sm text-severity-critical">
@@ -111,7 +150,16 @@ export default function TaskDetail() {
         <div className="mt-5 grid grid-cols-1 gap-5 lg:grid-cols-[1fr_400px]">
           {/* LEFT: player + timeline + keyframes */}
           <div className="space-y-5">
-            <div className="surface-card overflow-hidden">
+            <div className="surface-card overflow-hidden ring-1 ring-white/5">
+              <div className="flex items-center justify-between border-b border-border/60 px-4 py-3">
+                <div>
+                  <div className="text-sm font-medium">Video Review</div>
+                  <div className="text-xs text-muted-foreground">timeline markers are clickable</div>
+                </div>
+                <Badge variant="outline" className="border-border/80 text-muted-foreground">
+                  {task.video_url ? "Source detected" : "No source"}
+                </Badge>
+              </div>
               <div className="relative aspect-video bg-black">
                 {task.video_url ? (
                   <VideoPlayer
@@ -128,19 +176,19 @@ export default function TaskDetail() {
               </div>
 
               {/* QC Timeline */}
-              <div className="border-t border-border/60 p-4">
+              <div className="border-t border-border/60 bg-secondary/15 p-4">
                 <div className="mb-2 flex items-center justify-between text-xs">
                   <span className="font-medium uppercase tracking-wider text-muted-foreground">QC Timeline</span>
                   <span className="text-muted-foreground">{Math.round(currentTime)}s / {Math.round(duration)}s</span>
                 </div>
-                <div className="relative h-10 rounded-md bg-secondary/60 ring-1 ring-border">
+                <div className="relative h-11 overflow-hidden rounded-md bg-secondary/60 ring-1 ring-border">
                   <div className="absolute inset-y-0 left-0 bg-primary/20" style={{ width: `${(currentTime / duration) * 100}%` }} />
                   {issues.filter((i) => i.timestamp_sec != null).map((i) => (
                     <Tooltip key={i.id}>
                       <TooltipTrigger asChild>
                         <button
                           onClick={() => seek(i.timestamp_sec ?? 0)}
-                          className={`absolute top-1 h-8 w-1.5 rounded-sm ${markerClass(i.severity)}`}
+                          className={`absolute top-1.5 h-8 w-2 rounded-sm shadow-[0_0_18px_currentColor] ${markerClass(i.severity)}`}
                           style={{ left: `calc(${((i.timestamp_sec ?? 0) / duration) * 100}% - 3px)` }}
                         />
                       </TooltipTrigger>
@@ -155,7 +203,7 @@ export default function TaskDetail() {
 
               {/* Keyframes */}
               {task.key_frames?.length > 0 && (
-                <div className="border-t border-border/60 p-4">
+                <div className="border-t border-border/60 bg-secondary/10 p-4">
                   <div className="mb-3 text-xs font-medium uppercase tracking-wider text-muted-foreground">Flagged Key Frames</div>
                   <div className="flex gap-3 overflow-x-auto pb-1">
                     {task.key_frames.map((kf: KeyFrame, idx) => (
@@ -194,6 +242,19 @@ export default function TaskDetail() {
               currentTime={currentTime}
               isProcessing={isProcessing}
               onSeek={seek}
+              onTranscriptImport={async (raw) => {
+                if (isLocalId(task.id)) {
+                  updateLocalTranscript(task.id, raw);
+                  return;
+                }
+                const transcript = parseTranscriptText(raw);
+                if (!transcript.length) throw new Error("No transcript lines detected.");
+                const { error } = await supabase
+                  .from("qc_tasks")
+                  .update({ transcript, transcript_status: "ready", error_message: null })
+                  .eq("id", task.id);
+                if (error) throw error;
+              }}
             />
 
             {/* Severity breakdown */}
@@ -230,7 +291,7 @@ export default function TaskDetail() {
           </div>
 
           {/* RIGHT: bucket scores */}
-          <aside className="space-y-3">
+          <aside className="space-y-3 lg:sticky lg:top-20 lg:self-start">
             <div className="surface-card p-5">
               <div className="mb-3 text-sm font-medium">Score Buckets</div>
               <Accordion type="multiple" defaultValue={["brand"]} className="space-y-2">
@@ -341,6 +402,45 @@ function VideoPlayer({ url, videoRef, onLoadedMetadata, onTimeUpdate }: {
   );
 }
 
+function MiniMetric({ icon: Icon, label, value, suffix = "", tone }: {
+  icon: typeof ListChecks;
+  label: string;
+  value: number | string;
+  suffix?: string;
+  tone?: "bad";
+}) {
+  return (
+    <div className="metric-panel p-4">
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-[11px] uppercase tracking-wider text-muted-foreground">{label}</div>
+        <Icon className={`h-4 w-4 ${tone === "bad" ? "text-severity-critical" : "text-primary"}`} />
+      </div>
+      <div className={`mt-2 truncate text-2xl font-semibold ${tone === "bad" ? "text-severity-critical" : ""}`}>
+        {value}<span className="ml-1 text-sm text-muted-foreground">{suffix}</span>
+      </div>
+    </div>
+  );
+}
+
+function getVerdict(score: number | null, status: QcTask["status"]) {
+  if (status === "processing") return { label: "Processing", short: "Analyzing", className: "text-primary bg-primary/10" };
+  if (status === "failed") return { label: "Failed", short: "Failed", className: "text-severity-critical bg-severity-critical/10" };
+  if (score == null) return { label: "Needs review", short: "Unscored", className: "text-muted-foreground bg-secondary/50" };
+  if (score >= 80) return { label: "Publish ready", short: "Strong", className: "text-score-good bg-score-good/10" };
+  if (score >= 60) return { label: "Needs fixes", short: "Watchlist", className: "text-score-warn bg-score-warn/10" };
+  return { label: "High risk", short: "Blocked", className: "text-severity-critical bg-severity-critical/10" };
+}
+
+function scoreCssVar(score: number) {
+  if (score >= 80) return "--score-good";
+  if (score >= 60) return "--score-warn";
+  return "--score-bad";
+}
+
+function formatStatus(status: string) {
+  return status.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
 function markerClass(s: Severity) {
   return {
     critical: "bg-severity-critical",
@@ -368,6 +468,7 @@ function TranscriptPanel({
   currentTime,
   isProcessing,
   onSeek,
+  onTranscriptImport,
 }: {
   taskId: string;
   videoUrl: string | null;
@@ -379,10 +480,12 @@ function TranscriptPanel({
   currentTime: number;
   isProcessing: boolean;
   onSeek: (t: number) => void;
+  onTranscriptImport?: (raw: string) => void | Promise<void>;
 }) {
   const [query, setQuery] = useState("");
   const [retrying, setRetrying] = useState(false);
   const [overrideUrl, setOverrideUrl] = useState("");
+  const [manualTranscript, setManualTranscript] = useState("");
   const rowRefs = useRef<Record<number, HTMLButtonElement | null>>({});
 
 
@@ -417,6 +520,17 @@ function TranscriptPanel({
   const retry = async (mediaUrlOverride?: string) => {
     setRetrying(true);
     try {
+      if (!mediaUrlOverride && onTranscriptImport) {
+        try {
+          const segments = await pullLocalTranscript(videoUrl);
+          await awaitMaybe(onTranscriptImport(transcriptSegmentsToText(segments)));
+          toast({ title: "Transcript pulled", description: `Imported ${segments.length} caption segments.` });
+          return;
+        } catch (localError) {
+          console.warn("local transcript pull failed", localError);
+        }
+      }
+
       const { error } = await supabase.functions.invoke("transcribe-video", {
         body: { taskId, videoUrl, mediaUrlOverride },
       });
@@ -434,6 +548,18 @@ function TranscriptPanel({
     const u = overrideUrl.trim();
     if (!u) return;
     retry(u);
+  };
+
+  const submitManualTranscript = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!manualTranscript.trim() || !onTranscriptImport) return;
+    try {
+      await awaitMaybe(onTranscriptImport(manualTranscript));
+      setManualTranscript("");
+      toast({ title: "Transcript imported", description: "The local task now uses your pasted transcript." });
+    } catch (error) {
+      toast({ title: "Transcript import failed", description: error instanceof Error ? error.message : String(error), variant: "destructive" });
+    }
   };
 
   const showPending = transcript.length === 0 && (transcriptStatus === "pending" || (isProcessing && !transcriptStatus));
@@ -487,17 +613,23 @@ function TranscriptPanel({
               <span className="inline-flex items-center gap-2"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Transcribing audio from the video…</span>
             )}
             {showUnsupported && (
-              <div className="space-y-1.5">
+              <div className="space-y-2">
                 <div className="font-medium text-foreground/80">Transcript not available</div>
-                {transcriptError && /403|access denied|forbidden|bot|drm|encrypted/i.test(transcriptError) ? (
+                {transcriptError && /403|access denied|forbidden|bot|drm|encrypted|Gemini transcription 400|Unsupported image format|m3u8/i.test(transcriptError) ? (
                   <div>
-                    {/drm|encrypted/i.test(transcriptError)
+                    {/Gemini transcription 400|Unsupported image format|m3u8/i.test(transcriptError)
+                      ? "This K-point/Bajaj HLS video was resolved, but the deployed transcript function is still using the old Gemini path. Deploy the updated transcribe-video function so HLS segments are sent to ElevenLabs."
+                      : /drm|encrypted/i.test(transcriptError)
                       ? "This stream is DRM-protected, so its audio cannot be transcribed."
                       : "This host blocks automated fetching. Your video still plays above; we tried a rendered-browser fallback but couldn't reach a direct media file. Paste a direct .mp4 / .m3u8 below to enable speech-to-text — your player URL stays unchanged."}
                   </div>
                 ) : (
                   <div>We couldn't auto-resolve a direct audio file from this URL. Paste a direct .mp4 / .m3u8 below to enable speech-to-text — your player URL stays unchanged.</div>
                 )}
+                <Button size="sm" variant="outline" onClick={() => retry()} disabled={retrying} className="h-8 text-xs">
+                  {retrying ? <Loader2 className="mr-1.5 h-3 w-3 animate-spin" /> : null}
+                  Pull Transcript Again
+                </Button>
               </div>
             )}
             {showFailed && (
@@ -512,7 +644,7 @@ function TranscriptPanel({
             {showEmpty && "Transcript not available for this video."}
           </div>
 
-          {showOverride && (
+          {showOverride && !onTranscriptImport && (
             <form onSubmit={submitOverride} className="rounded-md border border-border bg-secondary/20 p-3">
               <div className="mb-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
                 Transcription source override
@@ -532,6 +664,27 @@ function TranscriptPanel({
                   Transcribe from this URL
                 </Button>
               </div>
+            </form>
+          )}
+
+          {onTranscriptImport && (
+            <form onSubmit={submitManualTranscript} className="rounded-md border border-border bg-secondary/20 p-3">
+              <div className="mb-1.5 flex items-center gap-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                <Upload className="h-3.5 w-3.5" /> Manual transcript import
+              </div>
+              <div className="mb-2 text-[11px] text-muted-foreground">
+                Paste SRT, VTT, timestamped text, or plain transcript lines. This keeps QC moving when ElevenLabs is not linked.
+              </div>
+              <Textarea
+                value={manualTranscript}
+                onChange={(e) => setManualTranscript(e.target.value)}
+                rows={5}
+                placeholder={"00:00 Welcome to Bajaj Finance...\n00:05 Check your loan offer..."}
+                className="mb-2 font-mono text-xs"
+              />
+              <Button type="submit" size="sm" disabled={!manualTranscript.trim()} className="h-8 text-xs">
+                Import Transcript
+              </Button>
             </form>
           )}
         </div>
@@ -568,4 +721,8 @@ function TranscriptPanel({
       )}
     </div>
   );
+}
+
+function awaitMaybe(value: void | Promise<void>) {
+  return Promise.resolve(value);
 }

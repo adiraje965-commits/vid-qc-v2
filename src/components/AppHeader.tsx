@@ -1,14 +1,14 @@
-import { ShieldCheck } from "lucide-react";
+import { BarChart3, Plus, ShieldCheck } from "lucide-react";
 import { Link, useLocation } from "react-router-dom";
 import { cn } from "@/lib/utils";
 
 export function AppHeader() {
   const loc = useLocation();
   return (
-    <header className="sticky top-0 z-40 border-b border-border/60 bg-background/80 backdrop-blur-xl">
+    <header className="sticky top-0 z-40 border-b border-white/10 bg-background/88 backdrop-blur-2xl">
       <div className="mx-auto flex h-16 max-w-[1600px] items-center gap-6 px-6">
         <Link to="/" className="flex items-center gap-2.5">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/15 ring-1 ring-primary/30">
+          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/15 shadow-[0_0_24px_hsl(var(--primary)/0.18)] ring-1 ring-primary/35">
             <ShieldCheck className="h-5 w-5 text-primary" />
           </div>
           <div className="leading-tight">
@@ -16,28 +16,30 @@ export function AppHeader() {
             <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">Video QC Engine</div>
           </div>
         </Link>
-        <nav className="ml-4 flex items-center gap-1 text-sm">
+        <nav className="ml-4 flex items-center gap-1 rounded-lg border border-white/8 bg-secondary/30 p-1 text-sm">
           {[
-            { to: "/", label: "Dashboard" },
-            { to: "/new", label: "New Analysis" },
+            { to: "/", label: "Dashboard", icon: BarChart3 },
+            { to: "/new", label: "New Analysis", icon: Plus },
           ].map((n) => {
             const active = n.to === "/" ? loc.pathname === "/" : loc.pathname.startsWith(n.to);
+            const Icon = n.icon;
             return (
               <Link
                 key={n.to}
                 to={n.to}
                 className={cn(
-                  "rounded-md px-3 py-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground",
-                  active && "bg-secondary text-foreground"
+                  "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-muted-foreground transition-all hover:bg-secondary hover:text-foreground",
+                  active && "bg-primary/15 text-foreground shadow-sm ring-1 ring-primary/20"
                 )}
               >
+                <Icon className="h-3.5 w-3.5" />
                 {n.label}
               </Link>
             );
           })}
         </nav>
-        <div className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
-          <span className="inline-block h-1.5 w-1.5 rounded-full bg-score-good" />
+        <div className="ml-auto flex items-center gap-2 rounded-md border border-score-good/20 bg-score-good/8 px-2.5 py-1 text-xs text-muted-foreground">
+          <span className="inline-block h-1.5 w-1.5 rounded-full bg-score-good shadow-[0_0_12px_hsl(var(--score-good))]" />
           QC Engine Online
         </div>
       </div>
