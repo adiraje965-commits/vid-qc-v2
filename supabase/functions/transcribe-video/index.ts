@@ -17,10 +17,10 @@ const BROWSER_HEADERS: Record<string, string> = {
 interface Word { text: string; start: number; end: number; speaker_id?: string; type?: string }
 interface Segment { start: number; end: number; text: string; speaker?: string }
 
-class MissingSpeechToTextPermissionError extends Error {
-  constructor(message = "ElevenLabs API key is missing the speech_to_text permission.") {
+class ElevenLabsConfigurationError extends Error {
+  constructor(message = "ElevenLabs API key is invalid or missing speech-to-text access.") {
     super(message);
-    this.name = "MissingSpeechToTextPermissionError";
+    this.name = "ElevenLabsConfigurationError";
   }
 }
 
@@ -486,8 +486,8 @@ async function transcribeBlobWithElevenLabs(blob: Blob, filename: string, conten
   });
   if (!res.ok) {
     const errorText = await res.text();
-    if (res.status === 401 && /missing_permissions|speech_to_text/i.test(errorText)) {
-      throw new MissingSpeechToTextPermissionError();
+    if (res.status === 401 && /invalid_api_key|missing_permissions|speech_to_text/i.test(errorText)) {
+      throw new ElevenLabsConfigurationError();
     }
     throw new Error(`ElevenLabs STT ${res.status}: ${errorText}`);
   }
