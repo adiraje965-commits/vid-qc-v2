@@ -20,6 +20,7 @@ export interface QcTask {
   medium_count: number;
   low_count: number;
   key_frames: KeyFrame[];
+  transcript: TranscriptSegment[];
   analysis_summary: string | null;
   error_message: string | null;
   created_at: string;
@@ -31,6 +32,13 @@ export interface KeyFrame {
   label: string;
   suggested_fix?: string;
   severity: Severity;
+}
+
+export interface TranscriptSegment {
+  start: number;
+  end: number;
+  text: string;
+  speaker?: string;
 }
 
 export interface QcIssue {
