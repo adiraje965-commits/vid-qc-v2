@@ -1,0 +1,1 @@
+ALTER TABLE public.qc_tasks ADD COLUMN IF NOT EXISTS transcript_status text;

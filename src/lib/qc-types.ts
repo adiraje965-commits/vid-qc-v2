@@ -21,6 +21,7 @@ export interface QcTask {
   low_count: number;
   key_frames: KeyFrame[];
   transcript: TranscriptSegment[];
+  transcript_status: "pending" | "ready" | "unsupported_source" | "failed" | null;
   analysis_summary: string | null;
   error_message: string | null;
   created_at: string;

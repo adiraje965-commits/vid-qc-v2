@@ -184,7 +184,10 @@ export default function TaskDetail() {
 
             {/* Transcript */}
             <TranscriptPanel
+              taskId={task.id}
+              videoUrl={task.video_url}
               transcript={(task.transcript ?? []) as TranscriptSegment[]}
+              transcriptStatus={task.transcript_status}
               currentTime={currentTime}
               isProcessing={isProcessing}
               onSeek={seek}
@@ -352,24 +355,30 @@ function fmtTime(s: number) {
 }
 
 function TranscriptPanel({
+  taskId,
+  videoUrl,
   transcript,
+  transcriptStatus,
   currentTime,
   isProcessing,
   onSeek,
 }: {
+  taskId: string;
+  videoUrl: string | null;
   transcript: TranscriptSegment[];
+  transcriptStatus: QcTask["transcript_status"];
   currentTime: number;
   isProcessing: boolean;
   onSeek: (t: number) => void;
 }) {
   const [query, setQuery] = useState("");
+  const [retrying, setRetrying] = useState(false);
   const rowRefs = useRef<Record<number, HTMLButtonElement | null>>({});
 
   const activeIdx = useMemo(() => {
     if (!transcript.length) return -1;
     const i = transcript.findIndex((s) => currentTime >= s.start && currentTime < s.end);
     if (i !== -1) return i;
-    // fallback: last segment whose start <= currentTime
     let last = -1;
     for (let j = 0; j < transcript.length; j++) if (transcript[j].start <= currentTime) last = j;
     return last;
@@ -393,6 +402,24 @@ function TranscriptPanel({
     await navigator.clipboard.writeText(txt);
     toast({ title: "Transcript copied" });
   };
+
+  const retry = async () => {
+    setRetrying(true);
+    try {
+      const { error } = await supabase.functions.invoke("transcribe-video", { body: { taskId, videoUrl } });
+      if (error) throw error;
+      toast({ title: "Re-transcribing…", description: "This may take up to a minute." });
+    } catch (e) {
+      toast({ title: "Retry failed", description: e instanceof Error ? e.message : String(e), variant: "destructive" });
+    } finally {
+      setRetrying(false);
+    }
+  };
+
+  const showPending = transcript.length === 0 && (transcriptStatus === "pending" || (isProcessing && !transcriptStatus));
+  const showUnsupported = transcript.length === 0 && transcriptStatus === "unsupported_source";
+  const showFailed = transcript.length === 0 && transcriptStatus === "failed";
+  const showEmpty = transcript.length === 0 && !showPending && !showUnsupported && !showFailed;
 
   return (
     <div className="surface-card p-5">
@@ -422,11 +449,25 @@ function TranscriptPanel({
 
       {transcript.length === 0 ? (
         <div className="rounded-md border border-dashed border-border bg-secondary/30 p-6 text-center text-xs text-muted-foreground">
-          {isProcessing ? (
-            <span className="inline-flex items-center gap-2"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Generating transcript…</span>
-          ) : (
-            "Transcript not available for this video."
+          {showPending && (
+            <span className="inline-flex items-center gap-2"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Transcribing audio from the video…</span>
           )}
+          {showUnsupported && (
+            <div className="space-y-1.5">
+              <div className="font-medium text-foreground/80">Transcript not available</div>
+              <div>Embedded YouTube/Vimeo players don't expose audio for transcription. Provide a direct .mp4 URL to enable speech-to-text.</div>
+            </div>
+          )}
+          {showFailed && (
+            <div className="space-y-2">
+              <div>Transcription failed.</div>
+              <Button size="sm" variant="outline" onClick={retry} disabled={retrying} className="h-7 text-xs">
+                {retrying ? <Loader2 className="mr-1.5 h-3 w-3 animate-spin" /> : null}
+                Retry transcription
+              </Button>
+            </div>
+          )}
+          {showEmpty && "Transcript not available for this video."}
         </div>
       ) : (
         <ScrollArea className="h-72 rounded-md border border-border bg-secondary/20">

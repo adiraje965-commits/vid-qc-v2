@@ -83,6 +83,7 @@ export type Database = {
           thumbnail_url: string | null
           topic_match_score: number | null
           transcript: Json | null
+          transcript_status: string | null
           updated_at: string
           url: string
           video_count: number | null
@@ -113,6 +114,7 @@ export type Database = {
           thumbnail_url?: string | null
           topic_match_score?: number | null
           transcript?: Json | null
+          transcript_status?: string | null
           updated_at?: string
           url: string
           video_count?: number | null
@@ -143,6 +145,7 @@ export type Database = {
           thumbnail_url?: string | null
           topic_match_score?: number | null
           transcript?: Json | null
+          transcript_status?: string | null
           updated_at?: string
           url?: string
           video_count?: number | null
