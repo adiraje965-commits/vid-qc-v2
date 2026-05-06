@@ -288,9 +288,15 @@ async function pickHlsVariant(masterUrl: string): Promise<{ url: string; encrypt
     if (!/#EXT-X-STREAM-INF/i.test(text)) {
       return { url: masterUrl, encrypted };
     }
-    // Master playlist: pick highest-bandwidth variant.
+    // Prefer an audio-only rendition (EXT-X-MEDIA TYPE=AUDIO with a URI).
+    const audioMedia = text.match(/#EXT-X-MEDIA:[^\n]*TYPE=AUDIO[^\n]*URI="([^"]+)"/i);
+    if (audioMedia?.[1]) {
+      logResolve("hls: picked audio-only rendition");
+      return { url: absolutize(masterUrl, audioMedia[1]), encrypted };
+    }
+    // Otherwise: pick lowest-bandwidth video variant (smaller .ts download).
     const lines = text.split(/\r?\n/);
-    let bestBw = -1;
+    let bestBw = Number.POSITIVE_INFINITY;
     let bestUri: string | null = null;
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
@@ -298,7 +304,7 @@ async function pickHlsVariant(masterUrl: string): Promise<{ url: string; encrypt
       if (bwMatch) {
         const bw = Number(bwMatch[1]);
         const uri = (lines[i + 1] || "").trim();
-        if (uri && !uri.startsWith("#") && bw > bestBw) {
+        if (uri && !uri.startsWith("#") && bw < bestBw) {
           bestBw = bw;
           bestUri = uri;
         }
