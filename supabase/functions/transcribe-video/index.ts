@@ -288,9 +288,15 @@ async function pickHlsVariant(masterUrl: string): Promise<{ url: string; encrypt
     if (!/#EXT-X-STREAM-INF/i.test(text)) {
       return { url: masterUrl, encrypted };
     }
-    // Master playlist: pick highest-bandwidth variant.
+    // Prefer an audio-only rendition (EXT-X-MEDIA TYPE=AUDIO with a URI).
+    const audioMedia = text.match(/#EXT-X-MEDIA:[^\n]*TYPE=AUDIO[^\n]*URI="([^"]+)"/i);
+    if (audioMedia?.[1]) {
+      logResolve("hls: picked audio-only rendition");
+      return { url: absolutize(masterUrl, audioMedia[1]), encrypted };
+    }
+    // Otherwise: pick lowest-bandwidth video variant (smaller .ts download).
     const lines = text.split(/\r?\n/);
-    let bestBw = -1;
+    let bestBw = Number.POSITIVE_INFINITY;
     let bestUri: string | null = null;
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
@@ -298,7 +304,7 @@ async function pickHlsVariant(masterUrl: string): Promise<{ url: string; encrypt
       if (bwMatch) {
         const bw = Number(bwMatch[1]);
         const uri = (lines[i + 1] || "").trim();
-        if (uri && !uri.startsWith("#") && bw > bestBw) {
+        if (uri && !uri.startsWith("#") && bw < bestBw) {
           bestBw = bw;
           bestUri = uri;
         }
@@ -511,7 +517,42 @@ async function transcribeMp4WithElevenLabs(mediaUrl: string): Promise<Segment[]>
   return transcribeBlobWithElevenLabs(blob, "video.mp4", ct);
 }
 
+async function transcribeUrlWithElevenLabs(mediaUrl: string): Promise<Segment[]> {
+  // Ask ElevenLabs to fetch the media itself (handles HLS, signed URLs, etc.)
+  const form = new FormData();
+  form.append("cloud_storage_url", mediaUrl);
+  form.append("model_id", "scribe_v1");
+  form.append("diarize", "true");
+  form.append("timestamps_granularity", "word");
+  const res = await fetch("https://api.elevenlabs.io/v1/speech-to-text", {
+    method: "POST",
+    headers: { "xi-api-key": ELEVENLABS_API_KEY },
+    body: form,
+  });
+  if (!res.ok) {
+    const errorText = await res.text();
+    if (res.status === 401 && /invalid_api_key|missing_permissions|speech_to_text/i.test(errorText)) {
+      throw new ElevenLabsConfigurationError();
+    }
+    throw new Error(`ElevenLabs STT (cloud_storage_url) ${res.status}: ${errorText}`);
+  }
+  const data = await res.json();
+  const words: Word[] = data.words ?? [];
+  if (!words.length && data.text) return [{ start: 0, end: 0, text: data.text }];
+  return groupWords(words);
+}
+
 async function transcribeHlsWithElevenLabs(hlsUrl: string): Promise<Segment[]> {
+  // First attempt: let ElevenLabs ingest the HLS URL directly.
+  try {
+    const segs = await transcribeUrlWithElevenLabs(hlsUrl);
+    if (segs.length) return segs;
+    console.log("ElevenLabs cloud_storage_url returned no segments; falling back to manual download.");
+  } catch (e) {
+    if (e instanceof ElevenLabsConfigurationError) throw e;
+    console.warn("ElevenLabs cloud_storage_url failed, falling back:", e instanceof Error ? e.message : String(e));
+  }
+
   const manifestRes = await fetch(hlsUrl, { headers: { ...BROWSER_HEADERS, Referer: pageOrigin(hlsUrl) } });
   if (!manifestRes.ok) throw new Error(`Failed to download HLS manifest (${manifestRes.status})`);
   const manifest = await manifestRes.text();
@@ -544,7 +585,11 @@ async function transcribeHlsWithElevenLabs(hlsUrl: string): Promise<Segment[]> {
   return transcribeBlobWithElevenLabs(new Blob(chunks, { type: "video/mp2t" }), "kpoint-video.ts", "video/mp2t");
 }
 
-async function transcribeHlsWithGemini(hlsUrl: string): Promise<Segment[]> {
+async function transcribeBytesWithGemini(bytes: Uint8Array, mimeType: string): Promise<Segment[]> {
+  const { encodeBase64 } = await import("https://deno.land/std@0.224.0/encoding/base64.ts");
+  const b64 = encodeBase64(bytes);
+  const dataUrl = `data:${mimeType};base64,${b64}`;
+
   const tool = {
     type: "function",
     function: {
@@ -558,8 +603,8 @@ async function transcribeHlsWithGemini(hlsUrl: string): Promise<Segment[]> {
             items: {
               type: "object",
               properties: {
-                start: { type: "number", description: "Start time in seconds" },
-                end: { type: "number", description: "End time in seconds" },
+                start: { type: "number" },
+                end: { type: "number" },
                 text: { type: "string" },
                 speaker: { type: "string" },
               },
@@ -580,13 +625,13 @@ async function transcribeHlsWithGemini(hlsUrl: string): Promise<Segment[]> {
       {
         role: "system",
         content:
-          "You are a transcription engine. Listen to the provided video/audio and return an accurate, diarized transcript with realistic timestamps in seconds. Break into ~3-6 second segments at natural pauses or speaker changes. Do not invent content — transcribe only what is actually spoken.",
+          "You are a transcription engine. Listen to the provided video/audio and return an accurate, diarized transcript with realistic timestamps in seconds. Break into ~3-6 second segments at natural pauses or speaker changes. Transcribe only what is actually spoken.",
       },
       {
         role: "user",
         content: [
-          { type: "text", text: "Transcribe this video by calling submit_transcript." },
-          { type: "image_url", image_url: { url: hlsUrl } },
+          { type: "text", text: "Transcribe this audio by calling submit_transcript." },
+          { type: "image_url", image_url: { url: dataUrl } },
         ],
       },
     ],
@@ -611,6 +656,36 @@ async function transcribeHlsWithGemini(hlsUrl: string): Promise<Segment[]> {
     speaker: s.speaker ? String(s.speaker) : undefined,
   })).filter((s) => s.text);
   return segs;
+}
+
+async function downloadHlsBytes(hlsUrl: string): Promise<Uint8Array> {
+  const manifestRes = await fetch(hlsUrl, { headers: { ...BROWSER_HEADERS, Referer: pageOrigin(hlsUrl) } });
+  if (!manifestRes.ok) throw new Error(`Failed to download HLS manifest (${manifestRes.status})`);
+  const manifest = await manifestRes.text();
+  if (/#EXT-X-KEY:[^\n]*METHOD=(?!NONE)[A-Z0-9-]+/i.test(manifest)) {
+    throw new Error("DRM/encrypted HLS stream cannot be transcribed.");
+  }
+  const refs = manifest.split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
+  if (!refs.length) throw new Error("HLS manifest contains no media segments.");
+  if (refs.some((r) => /\.m3u8(\?|#|$)/i.test(r))) {
+    return downloadHlsBytes(absolutize(hlsUrl, refs.find((r) => /\.m3u8(\?|#|$)/i.test(r)) ?? refs[0]));
+  }
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  const maxBytes = 30 * 1024 * 1024;
+  for (const ref of refs) {
+    const segmentUrl = absolutize(hlsUrl, ref);
+    const res = await fetch(segmentUrl, { headers: { ...BROWSER_HEADERS, Referer: pageOrigin(hlsUrl) } });
+    if (!res.ok) throw new Error(`Failed to download HLS segment (${res.status})`);
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    total += bytes.byteLength;
+    if (total > maxBytes) throw new Error("HLS media is too large to transcribe in one request.");
+    chunks.push(bytes);
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) { merged.set(c, offset); offset += c.byteLength; }
+  return merged;
 }
 
 Deno.serve(async (req) => {
@@ -684,9 +759,36 @@ Deno.serve(async (req) => {
       media_kind: resolved.kind,
     }).eq("id", taskId);
 
-    const segments = resolved.kind === "mp4"
-      ? await transcribeMp4WithElevenLabs(resolved.url)
-      : await transcribeHlsWithElevenLabs(resolved.url);
+    let segments: Segment[] = [];
+    if (resolved.kind === "mp4") {
+      try {
+        segments = await transcribeMp4WithElevenLabs(resolved.url);
+      } catch (err) {
+        if (err instanceof ElevenLabsConfigurationError) throw err;
+        console.warn("ElevenLabs mp4 failed, falling back to Gemini:", err instanceof Error ? err.message : String(err));
+      }
+      if (!segments.length) {
+        const mp4Res = await fetch(resolved.url, { headers: { ...BROWSER_HEADERS, Referer: pageOrigin(resolved.url) } });
+        if (!mp4Res.ok) throw new Error(`Failed to download media (${mp4Res.status})`);
+        const bytes = new Uint8Array(await mp4Res.arrayBuffer());
+        segments = await transcribeBytesWithGemini(bytes, mp4Res.headers.get("content-type") ?? "video/mp4");
+      }
+    } else {
+      try {
+        segments = await transcribeHlsWithElevenLabs(resolved.url);
+      } catch (err) {
+        if (err instanceof ElevenLabsConfigurationError) throw err;
+        console.warn("ElevenLabs HLS failed, falling back to Gemini:", err instanceof Error ? err.message : String(err));
+      }
+      if (!segments.length) {
+        console.log("Falling back to Gemini for HLS transcription.");
+        const bytes = await downloadHlsBytes(resolved.url);
+        segments = await transcribeBytesWithGemini(bytes, "video/mp2t");
+      }
+    }
+    if (!segments.length) {
+      throw new Error("Transcription returned no segments. The audio may be silent or unsupported.");
+    }
 
     await supabase.from("qc_tasks").update({
       transcript: segments,
