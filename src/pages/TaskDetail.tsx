@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft, ExternalLink, Loader2, AlertTriangle, ShieldAlert, Activity, Sparkles, Copy, Search, FileText, Upload, Clock3, Gauge, ListChecks, Radio } from "lucide-react";
+import { VideoCapture } from "@/components/VideoCapture";
 import type { LucideIcon } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 
