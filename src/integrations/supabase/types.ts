@@ -73,6 +73,8 @@ export type Database = {
           id: string
           key_frames: Json | null
           low_count: number | null
+          media_kind: string | null
+          media_url: string | null
           medium_count: number | null
           overall_score: number | null
           page_markdown: string | null
@@ -104,6 +106,8 @@ export type Database = {
           id?: string
           key_frames?: Json | null
           low_count?: number | null
+          media_kind?: string | null
+          media_url?: string | null
           medium_count?: number | null
           overall_score?: number | null
           page_markdown?: string | null
@@ -135,6 +139,8 @@ export type Database = {
           id?: string
           key_frames?: Json | null
           low_count?: number | null
+          media_kind?: string | null
+          media_url?: string | null
           medium_count?: number | null
           overall_score?: number | null
           page_markdown?: string | null
