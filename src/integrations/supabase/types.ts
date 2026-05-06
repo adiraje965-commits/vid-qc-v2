@@ -14,6 +14,68 @@ export type Database = {
   }
   public: {
     Tables: {
+      profiles: {
+        Row: {
+          avatar_url: string | null
+          created_at: string
+          display_name: string | null
+          email: string | null
+          id: string
+          updated_at: string
+        }
+        Insert: {
+          avatar_url?: string | null
+          created_at?: string
+          display_name?: string | null
+          email?: string | null
+          id: string
+          updated_at?: string
+        }
+        Update: {
+          avatar_url?: string | null
+          created_at?: string
+          display_name?: string | null
+          email?: string | null
+          id?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      qc_comments: {
+        Row: {
+          body: string
+          created_at: string
+          id: string
+          task_id: string
+          timestamp_sec: number | null
+          user_id: string
+        }
+        Insert: {
+          body: string
+          created_at?: string
+          id?: string
+          task_id: string
+          timestamp_sec?: number | null
+          user_id: string
+        }
+        Update: {
+          body?: string
+          created_at?: string
+          id?: string
+          task_id?: string
+          timestamp_sec?: number | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "qc_comments_task_id_fkey"
+            columns: ["task_id"]
+            isOneToOne: false
+            referencedRelation: "qc_tasks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       qc_issues: {
         Row: {
           bucket: string
@@ -62,6 +124,10 @@ export type Database = {
         Row: {
           analysis_group_id: string | null
           analysis_summary: string | null
+          approval_note: string | null
+          approval_status: string
+          approved_at: string | null
+          approved_by: string | null
           brand_score: number | null
           contextual_score: number | null
           created_at: string
@@ -77,10 +143,12 @@ export type Database = {
           media_url: string | null
           medium_count: number | null
           overall_score: number | null
+          owner_id: string | null
           page_markdown: string | null
           page_title: string | null
           status: string
           strategic_score: number | null
+          tags: string[]
           technical_score: number | null
           thumbnail_url: string | null
           topic_match_score: number | null
@@ -95,6 +163,10 @@ export type Database = {
         Insert: {
           analysis_group_id?: string | null
           analysis_summary?: string | null
+          approval_note?: string | null
+          approval_status?: string
+          approved_at?: string | null
+          approved_by?: string | null
           brand_score?: number | null
           contextual_score?: number | null
           created_at?: string
@@ -110,10 +182,12 @@ export type Database = {
           media_url?: string | null
           medium_count?: number | null
           overall_score?: number | null
+          owner_id?: string | null
           page_markdown?: string | null
           page_title?: string | null
           status?: string
           strategic_score?: number | null
+          tags?: string[]
           technical_score?: number | null
           thumbnail_url?: string | null
           topic_match_score?: number | null
@@ -128,6 +202,10 @@ export type Database = {
         Update: {
           analysis_group_id?: string | null
           analysis_summary?: string | null
+          approval_note?: string | null
+          approval_status?: string
+          approved_at?: string | null
+          approved_by?: string | null
           brand_score?: number | null
           contextual_score?: number | null
           created_at?: string
@@ -143,10 +221,12 @@ export type Database = {
           media_url?: string | null
           medium_count?: number | null
           overall_score?: number | null
+          owner_id?: string | null
           page_markdown?: string | null
           page_title?: string | null
           status?: string
           strategic_score?: number | null
+          tags?: string[]
           technical_score?: number | null
           thumbnail_url?: string | null
           topic_match_score?: number | null
@@ -160,15 +240,43 @@ export type Database = {
         }
         Relationships: []
       }
+      user_roles: {
+        Row: {
+          created_at: string
+          id: string
+          role: Database["public"]["Enums"]["app_role"]
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          role: Database["public"]["Enums"]["app_role"]
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          role?: Database["public"]["Enums"]["app_role"]
+          user_id?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      has_role: {
+        Args: {
+          _role: Database["public"]["Enums"]["app_role"]
+          _user_id: string
+        }
+        Returns: boolean
+      }
+      is_admin: { Args: { _user_id: string }; Returns: boolean }
     }
     Enums: {
-      [_ in never]: never
+      app_role: "admin" | "reviewer" | "viewer"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -295,6 +403,8 @@ export type CompositeTypes<
 
 export const Constants = {
   public: {
-    Enums: {},
+    Enums: {
+      app_role: ["admin", "reviewer", "viewer"],
+    },
   },
 } as const
