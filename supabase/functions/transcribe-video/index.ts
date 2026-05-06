@@ -806,16 +806,36 @@ Deno.serve(async (req) => {
         segments = await transcribeBytesWithGemini(bytes, mp4Res.headers.get("content-type") ?? "video/mp4");
       }
     } else {
+      // HLS path: download .ts segments, extract MP3 with WASM ffmpeg, then transcribe.
       try {
-        segments = await transcribeHlsWithElevenLabs(resolved.url);
+        const tsBytes = await downloadHlsBytes(resolved.url);
+        console.log(`HLS downloaded: ${tsBytes.byteLength} bytes; extracting MP3 with ffmpeg-wasm…`);
+        const mp3Bytes = await extractMp3FromBytes(tsBytes, "input.ts");
+        console.log(`MP3 extracted: ${mp3Bytes.byteLength} bytes; sending to ElevenLabs…`);
+        try {
+          segments = await transcribeBlobWithElevenLabs(
+            new Blob([mp3Bytes], { type: "audio/mpeg" }),
+            "audio.mp3",
+            "audio/mpeg",
+          );
+        } catch (err) {
+          if (err instanceof ElevenLabsConfigurationError) throw err;
+          console.warn("ElevenLabs MP3 failed, falling back to Gemini:", err instanceof Error ? err.message : String(err));
+          segments = await transcribeBytesWithGemini(mp3Bytes, "audio/mpeg");
+        }
       } catch (err) {
         if (err instanceof ElevenLabsConfigurationError) throw err;
-        console.warn("ElevenLabs HLS failed, falling back to Gemini:", err instanceof Error ? err.message : String(err));
-      }
-      if (!segments.length) {
-        console.log("Falling back to Gemini for HLS transcription.");
-        const bytes = await downloadHlsBytes(resolved.url);
-        segments = await transcribeBytesWithGemini(bytes, "video/mp2t");
+        console.warn("ffmpeg MP3 extraction failed, falling back to legacy HLS path:", err instanceof Error ? err.message : String(err));
+        try {
+          segments = await transcribeHlsWithElevenLabs(resolved.url);
+        } catch (err2) {
+          if (err2 instanceof ElevenLabsConfigurationError) throw err2;
+          console.warn("Legacy HLS path failed too, falling back to Gemini on raw bytes:", err2 instanceof Error ? err2.message : String(err2));
+        }
+        if (!segments.length) {
+          const bytes = await downloadHlsBytes(resolved.url);
+          segments = await transcribeBytesWithGemini(bytes, "video/mp2t");
+        }
       }
     }
     if (!segments.length) {
