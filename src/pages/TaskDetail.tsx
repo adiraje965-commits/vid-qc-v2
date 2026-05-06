@@ -15,6 +15,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft, ExternalLink, Loader2, AlertTriangle, ShieldAlert, Activity, Sparkles, Copy, Search, FileText, Upload, Clock3, Gauge, ListChecks, Radio } from "lucide-react";
 import { VideoCapture } from "@/components/VideoCapture";
+import { DeepReviewPanel } from "@/components/DeepReviewPanel";
 import type { LucideIcon } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 
@@ -232,6 +233,10 @@ export default function TaskDetail() {
                 </div>
               )}
             </div>
+
+            {task.video_url && !isLocalId(task.id) && (
+              <DeepReviewPanel taskId={task.id} videoUrl={task.video_url} pageContext={task.page_markdown} />
+            )}
 
             {task.video_url && /\.(mp4|webm|mov|m3u8)(\?|#|$)/i.test(task.video_url) && task.transcript_status !== "ready" && !isLocalId(task.id) && (
               <VideoCapture
