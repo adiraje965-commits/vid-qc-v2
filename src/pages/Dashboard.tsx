@@ -12,6 +12,9 @@ import { QcTask, scoreColor } from "@/lib/qc-types";
 export default function Dashboard() {
   const [tasks, setTasks] = useState<QcTask[]>([]);
   const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [tagFilter, setTagFilter] = useState<string>("");
+  const [statusFilter, setStatusFilter] = useState<string>("all");
 
   useEffect(() => {
     const load = async () => {
@@ -33,6 +36,17 @@ export default function Dashboard() {
       .subscribe();
     return () => { unsubLocal(); supabase.removeChannel(ch); };
   }, []);
+
+  const allTags = Array.from(new Set(tasks.flatMap((t) => t.tags ?? []))).sort();
+  const filtered = tasks.filter((t) => {
+    if (statusFilter !== "all" && t.status !== statusFilter) return false;
+    if (tagFilter && !(t.tags ?? []).includes(tagFilter)) return false;
+    if (search) {
+      const q = search.toLowerCase();
+      if (!(t.page_title ?? "").toLowerCase().includes(q) && !(t.url ?? "").toLowerCase().includes(q)) return false;
+    }
+    return true;
+  });
 
   const scored = tasks.filter((task) => task.overall_score != null);
   const stats = {
@@ -76,35 +90,32 @@ export default function Dashboard() {
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-5 py-4">
             <div>
               <div className="text-sm font-medium">Recent Tasks</div>
-              <div className="text-xs text-muted-foreground">{tasks.length} total analyses across cloud and local fallback</div>
+              <div className="text-xs text-muted-foreground">{filtered.length} of {tasks.length} shown</div>
             </div>
-            <Badge variant="outline" className="border-primary/30 bg-primary/10 text-primary">
-              Live sync
-            </Badge>
+            <div className="flex flex-wrap items-center gap-2">
+              <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search title/URL…" className="h-8 w-48 rounded-md border border-border bg-background px-2 text-xs" />
+              <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="h-8 rounded-md border border-border bg-background px-2 text-xs">
+                <option value="all">All status</option><option value="processing">Processing</option><option value="completed">Completed</option><option value="failed">Failed</option>
+              </select>
+              <select value={tagFilter} onChange={(e) => setTagFilter(e.target.value)} className="h-8 rounded-md border border-border bg-background px-2 text-xs">
+                <option value="">All tags</option>{allTags.map((t) => <option key={t} value={t}>{t}</option>)}
+              </select>
+              <Badge variant="outline" className="border-primary/30 bg-primary/10 text-primary">Live sync</Badge>
+            </div>
           </div>
           <div className="divide-y divide-border/60">
             <div className="hidden grid-cols-[88px_1.15fr_1.8fr_130px_140px_150px_52px] gap-3 px-5 py-3 text-[11px] uppercase tracking-wider text-muted-foreground lg:grid">
               <div>Preview</div><div>Task</div><div>URL</div><div>Score</div><div>Severity</div><div>Date</div><div></div>
             </div>
-            {loading && (
-              <div className="flex items-center justify-center py-16 text-muted-foreground">
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading tasks...
-              </div>
-            )}
-            {!loading && tasks.length === 0 && (
+            {loading && (<div className="flex items-center justify-center py-16 text-muted-foreground"><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading tasks...</div>)}
+            {!loading && filtered.length === 0 && (
               <div className="flex flex-col items-center justify-center py-20 text-center">
-                <div className="flex h-14 w-14 items-center justify-center rounded-lg border border-border bg-secondary/40">
-                  <FileVideo2 className="h-7 w-7 text-muted-foreground/70" />
-                </div>
-                <p className="mt-4 text-sm text-muted-foreground">No tasks yet. Run your first QC analysis.</p>
-                <Link to="/new" className="mt-4">
-                  <Button>Start New Analysis</Button>
-                </Link>
+                <div className="flex h-14 w-14 items-center justify-center rounded-lg border border-border bg-secondary/40"><FileVideo2 className="h-7 w-7 text-muted-foreground/70" /></div>
+                <p className="mt-4 text-sm text-muted-foreground">{tasks.length === 0 ? "No tasks yet. Run your first QC analysis." : "No tasks match these filters."}</p>
+                {tasks.length === 0 && <Link to="/new" className="mt-4"><Button>Start New Analysis</Button></Link>}
               </div>
             )}
-            {tasks.map((task) => (
-              <TaskRow key={task.id} task={task} />
-            ))}
+            {filtered.map((task) => (<TaskRow key={task.id} task={task} />))}
           </div>
         </section>
       </main>
