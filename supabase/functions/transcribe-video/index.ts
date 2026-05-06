@@ -517,7 +517,42 @@ async function transcribeMp4WithElevenLabs(mediaUrl: string): Promise<Segment[]>
   return transcribeBlobWithElevenLabs(blob, "video.mp4", ct);
 }
 
+async function transcribeUrlWithElevenLabs(mediaUrl: string): Promise<Segment[]> {
+  // Ask ElevenLabs to fetch the media itself (handles HLS, signed URLs, etc.)
+  const form = new FormData();
+  form.append("cloud_storage_url", mediaUrl);
+  form.append("model_id", "scribe_v1");
+  form.append("diarize", "true");
+  form.append("timestamps_granularity", "word");
+  const res = await fetch("https://api.elevenlabs.io/v1/speech-to-text", {
+    method: "POST",
+    headers: { "xi-api-key": ELEVENLABS_API_KEY },
+    body: form,
+  });
+  if (!res.ok) {
+    const errorText = await res.text();
+    if (res.status === 401 && /invalid_api_key|missing_permissions|speech_to_text/i.test(errorText)) {
+      throw new ElevenLabsConfigurationError();
+    }
+    throw new Error(`ElevenLabs STT (cloud_storage_url) ${res.status}: ${errorText}`);
+  }
+  const data = await res.json();
+  const words: Word[] = data.words ?? [];
+  if (!words.length && data.text) return [{ start: 0, end: 0, text: data.text }];
+  return groupWords(words);
+}
+
 async function transcribeHlsWithElevenLabs(hlsUrl: string): Promise<Segment[]> {
+  // First attempt: let ElevenLabs ingest the HLS URL directly.
+  try {
+    const segs = await transcribeUrlWithElevenLabs(hlsUrl);
+    if (segs.length) return segs;
+    console.log("ElevenLabs cloud_storage_url returned no segments; falling back to manual download.");
+  } catch (e) {
+    if (e instanceof ElevenLabsConfigurationError) throw e;
+    console.warn("ElevenLabs cloud_storage_url failed, falling back:", e instanceof Error ? e.message : String(e));
+  }
+
   const manifestRes = await fetch(hlsUrl, { headers: { ...BROWSER_HEADERS, Referer: pageOrigin(hlsUrl) } });
   if (!manifestRes.ok) throw new Error(`Failed to download HLS manifest (${manifestRes.status})`);
   const manifest = await manifestRes.text();
