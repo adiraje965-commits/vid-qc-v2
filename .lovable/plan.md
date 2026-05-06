@@ -1,56 +1,96 @@
-## Auto-populate transcripts from the actual video audio
+## Goal
 
-### Why the current behaviour is wrong
+Get a real spoken transcript from Bajaj Kapsule (and similar embed) videos so QC analysis is grounded in audio — without changing the URL the user pasted and without breaking the existing iframe player.
 
-Today `run-qc` asks Gemini (via the Lovable AI Gateway) to "infer" a transcript from page markdown + key frames. The gateway's chat-completions endpoint does not actually fetch or listen to the video, so the transcript is hallucinated text loosely related to the page — not what is spoken in the video. We need real speech-to-text on the video file itself.
+## Why it's failing
 
-### Approach
+The pasted URL (`videos.bajajfinserv.in/.../embedded`) is an HTML iframe page, not a media file. ElevenLabs Scribe rejects HTML as `invalid_audio`. We need the actual `.mp4` / `.m3u8` that lives *inside* that page.
 
-Use the **ElevenLabs** connector (Scribe speech-to-text). ElevenLabs STT accepts a public audio/video URL or a file upload and returns word-level timestamps which we group into 2-6s segments. This works for direct `.mp4` / Bajaj video URLs. For YouTube/Vimeo (no public media URL) we will fall back to a clear "Transcript unavailable for embedded YouTube/Vimeo videos — only direct video files are supported" empty state instead of fabricating one.
+## Core principle: URL-first, player untouched
 
-### Steps
+- The URL the user pasted stays the source of truth. `qc_tasks.url` and `qc_tasks.video_url` are NOT overwritten.
+- The existing iframe / `<video>` player keeps using `video_url` exactly as today — embed pages keep playing in their iframe, direct mp4s keep playing in the native player.
+- Resolution to a direct media file happens **only** inside the `transcribe-video` edge function and is stored in a **new** column `media_url` used **only** by transcription. The player never reads it.
 
-1. **Add ElevenLabs connector**
-   - Call `standard_connectors--connect` with `connector_id: elevenlabs` so `ELEVENLABS_API_KEY` is available to edge functions. (Direct API, not gateway — ElevenLabs is `uses connector gateway: false`.)
+## Resolver pipeline (server-side, transcribe-video)
 
-2. **New edge function `transcribe-video`** (`supabase/functions/transcribe-video/index.ts`)
-   - Input: `{ taskId, videoUrl }`.
-   - If `videoUrl` is YouTube / Vimeo / missing → write `transcript: []` and a small marker (`transcript_status: "unsupported_source"`) and return.
-   - Otherwise POST to `https://api.elevenlabs.io/v1/speech-to-text` with:
-     - `model_id: scribe_v1`
-     - `cloud_storage_url: <videoUrl>` (Scribe accepts remote URLs; if the URL is not directly fetchable we stream-download with `fetch` and forward as multipart `file`).
-     - `timestamps_granularity: "word"`, `diarize: true`.
-   - Group the returned words into segments of ~3s (break on speaker change or sentence punctuation), shape `{ start, end, text, speaker }`.
-   - Persist via service-role client to `qc_tasks.transcript`.
+```text
+video_url (from task)
+   |
+   v
+[1] HEAD/extension says audio/* or video/*?  --yes--> use as media_url
+   | no (it's HTML)
+   v
+[2] Fetch HTML with browser headers (UA + Referer)
+       |
+       +-- og:video / og:audio meta tag           -> media_url
+       +-- <video><source src=...>                -> media_url
+       +-- JSON-LD VideoObject contentUrl         -> media_url
+       +-- regex .mp4|.m4a|.mp3|.webm|.wav in JS  -> media_url
+       +-- regex .m3u8 (HLS)                      -> media_url (HLS path)
+       +-- iframe src on same page                -> recurse once
+   |
+   v
+[3a] media_url is mp4/m4a/etc.  -> ElevenLabs Scribe (existing path)
+[3b] media_url is .m3u8 (HLS)   -> Gemini 2.5 Pro via Lovable AI Gateway
+                                   with fileData(mime=application/x-mpegURL)
+                                   constrained to submit_transcript tool
+                                   returning TranscriptSegment[]
+[3c] nothing found              -> transcript_status = "unsupported_source"
+                                   error_message explains + offers manual paste
+```
 
-3. **Wire it into `run-qc`**
-   - Remove the `transcript` field from the Gemini tool schema and prompt — Gemini should no longer invent transcripts.
-   - After `run-qc` finishes its QC update, fire-and-forget invoke `transcribe-video` with the same `taskId` + `videoUrl` (don't block QC completion on STT, which can take 10-60s on long clips).
-   - The existing realtime subscription on `qc_tasks` in `TaskDetail.tsx` will refresh the transcript panel as soon as `transcribe-video` writes the row.
+Persist `media_url` and `media_kind` ("mp4" | "hls" | null) on `qc_tasks` so re-runs skip resolution.
 
-4. **Schema**
-   - Add `transcript_status text` (nullable) to `qc_tasks` so the UI can distinguish `pending`, `ready`, `unsupported_source`, `failed`. Migration via the migration tool.
+## Manual fallback (does not change `video_url`)
 
-5. **UI updates (`src/pages/TaskDetail.tsx`)**
-   - Replace the current generic empty state with three states driven by `transcript_status`:
-     - `pending` → spinner + "Transcribing audio…"
-     - `unsupported_source` → "Transcript not available — embedded YouTube/Vimeo player. Provide a direct .mp4 to enable transcription."
-     - `failed` → error + retry button that re-invokes `transcribe-video`.
-   - Keep existing timeline-sync, click-to-seek, search, and copy-all behaviour.
+In `TaskDetail.tsx`, when `transcript_status` is `unsupported_source` or `failed`, render a small "Transcription source" affordance under the transcript panel:
 
-6. **Type updates**
-   - `src/lib/qc-types.ts`: add `transcript_status?: "pending" | "ready" | "unsupported_source" | "failed" | null` to `QcTask`.
+- Input: "Paste direct .mp4 URL for transcription only"
+- Button: "Transcribe from this URL"
+- On submit: invoke `transcribe-video` with `{ taskId, mediaUrlOverride }`. The function writes only `media_url`/`transcript`/`transcript_status`. **`video_url` is never touched**, so the player still shows the original embed.
 
-### Files touched
+A small caption clarifies: "Player keeps using your original URL. This is only used to fetch audio for the transcript."
 
-- `standard_connectors--connect` (ElevenLabs)
-- New migration: add `transcript_status` column
-- New `supabase/functions/transcribe-video/index.ts`
-- `supabase/functions/run-qc/index.ts` — drop transcript prompt, kick off `transcribe-video`
-- `src/lib/qc-types.ts` — add `transcript_status`
-- `src/pages/TaskDetail.tsx` — status-aware transcript panel + retry
+## Steps
 
-### Notes / limitations
+1. **Migration**
+   - Add `media_url text` and `media_kind text` to `qc_tasks` (nullable). No backfill.
 
-- YouTube and Vimeo embeds intentionally do not expose an audio stream; real transcription there requires a separate yt-dlp-style backend, which we are not adding now. We surface this clearly instead of faking it.
-- Existing tasks created before this change will keep their old (inferred) transcript; running QC again on the same video will overwrite it with the real one.
+2. **`supabase/functions/transcribe-video/index.ts`**
+   - Drop the over-eager `\/embed(ed)?` and `player\.` rejects added in the last patch — let those URLs flow into the resolver. Keep YouTube/Vimeo on the unsupported list (need yt-dlp).
+   - Add `resolveMediaUrl(pageUrl)` with the pipeline above, browser headers (`User-Agent: Mozilla/5.0 ... Chrome/...`, `Referer` = page origin, `Accept: text/html,...`).
+   - Branch on `media_kind`: ElevenLabs for mp4, Gemini Pro fileData for m3u8, mark unsupported otherwise.
+   - Accept optional `mediaUrlOverride` in the request body — if present, skip resolution.
+   - Persist `media_url`, `media_kind`, `transcript`, `transcript_status`, `error_message`. Never write `video_url`.
+
+3. **`supabase/functions/run-qc/index.ts`**
+   - No change to player wiring. Continue invoking `transcribe-video` after QC completes; the resolver now handles embeds.
+
+4. **`src/pages/TaskDetail.tsx`**
+   - Player code unchanged.
+   - Transcript panel: when status is `unsupported_source` or `failed`, render the manual `mediaUrlOverride` input + button described above.
+   - Show a subtle "Transcription source: <host of media_url>" line when `media_url` differs from `video_url`, so analysts know what audio was transcribed.
+
+5. **`src/lib/qc-types.ts`**
+   - Add `media_url: string | null` and `media_kind: "mp4" | "hls" | null` to `QcTask`.
+
+## Technical details
+
+- **HTML fetch headers** (Bajaj's Akamai gates default fetches with 403):
+  - `User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36`
+  - `Referer: <origin>/`
+  - `Accept: text/html,application/xhtml+xml,*/*;q=0.8`
+- **Gemini HLS path**: POST `https://ai.gateway.lovable.dev/v1/chat/completions`, model `google/gemini-2.5-pro`, message content `[{type:"text",...},{type:"file",file:{file_data:{mime_type:"application/x-mpegURL",file_uri:<m3u8>}}}]`, force `submit_transcript({segments:[{start,end,text,speaker?}]})` tool.
+- **Idempotency**: if `media_url` already set and `transcript_status === "ready"`, skip.
+- **Files touched**:
+  - new migration (add `media_url`, `media_kind`)
+  - `supabase/functions/transcribe-video/index.ts`
+  - `src/lib/qc-types.ts`
+  - `src/pages/TaskDetail.tsx`
+
+## Limitations
+
+- DRM streams (Widevine etc.) remain untranscribable — no legitimate workaround.
+- YouTube/Vimeo still need yt-dlp; those stay `unsupported_source` with the manual paste fallback.
+- If Bajaj rotates to signed-cookie streams, auto-resolution may fail; the manual paste path remains.

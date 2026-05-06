@@ -186,6 +186,8 @@ export default function TaskDetail() {
             <TranscriptPanel
               taskId={task.id}
               videoUrl={task.video_url}
+              mediaUrl={task.media_url}
+              mediaKind={task.media_kind}
               transcript={(task.transcript ?? []) as TranscriptSegment[]}
               transcriptStatus={task.transcript_status}
               currentTime={currentTime}
@@ -357,6 +359,8 @@ function fmtTime(s: number) {
 function TranscriptPanel({
   taskId,
   videoUrl,
+  mediaUrl,
+  mediaKind,
   transcript,
   transcriptStatus,
   currentTime,
@@ -365,6 +369,8 @@ function TranscriptPanel({
 }: {
   taskId: string;
   videoUrl: string | null;
+  mediaUrl: string | null;
+  mediaKind: "mp4" | "hls" | null;
   transcript: TranscriptSegment[];
   transcriptStatus: QcTask["transcript_status"];
   currentTime: number;
@@ -373,7 +379,9 @@ function TranscriptPanel({
 }) {
   const [query, setQuery] = useState("");
   const [retrying, setRetrying] = useState(false);
+  const [overrideUrl, setOverrideUrl] = useState("");
   const rowRefs = useRef<Record<number, HTMLButtonElement | null>>({});
+
 
   const activeIdx = useMemo(() => {
     if (!transcript.length) return -1;
@@ -403,10 +411,12 @@ function TranscriptPanel({
     toast({ title: "Transcript copied" });
   };
 
-  const retry = async () => {
+  const retry = async (mediaUrlOverride?: string) => {
     setRetrying(true);
     try {
-      const { error } = await supabase.functions.invoke("transcribe-video", { body: { taskId, videoUrl } });
+      const { error } = await supabase.functions.invoke("transcribe-video", {
+        body: { taskId, videoUrl, mediaUrlOverride },
+      });
       if (error) throw error;
       toast({ title: "Re-transcribing…", description: "This may take up to a minute." });
     } catch (e) {
@@ -416,10 +426,25 @@ function TranscriptPanel({
     }
   };
 
+  const submitOverride = (e: React.FormEvent) => {
+    e.preventDefault();
+    const u = overrideUrl.trim();
+    if (!u) return;
+    retry(u);
+  };
+
   const showPending = transcript.length === 0 && (transcriptStatus === "pending" || (isProcessing && !transcriptStatus));
   const showUnsupported = transcript.length === 0 && transcriptStatus === "unsupported_source";
   const showFailed = transcript.length === 0 && transcriptStatus === "failed";
   const showEmpty = transcript.length === 0 && !showPending && !showUnsupported && !showFailed;
+  const showOverride = showUnsupported || showFailed;
+
+  let resolvedHost: string | null = null;
+  try {
+    if (mediaUrl && videoUrl && new URL(mediaUrl).host !== new URL(videoUrl).host) {
+      resolvedHost = new URL(mediaUrl).host;
+    }
+  } catch { /* ignore */ }
 
   return (
     <div className="surface-card p-5">
@@ -428,6 +453,11 @@ function TranscriptPanel({
           <FileText className="h-4 w-4 text-primary" /> Transcript
           {transcript.length > 0 && (
             <span className="text-[11px] font-normal text-muted-foreground">· {transcript.length} segments</span>
+          )}
+          {resolvedHost && transcript.length > 0 && (
+            <span className="text-[11px] font-normal text-muted-foreground">
+              · audio source: {resolvedHost}{mediaKind === "hls" ? " (HLS)" : ""}
+            </span>
           )}
         </div>
         <div className="ml-auto flex items-center gap-2">
@@ -448,26 +478,51 @@ function TranscriptPanel({
       </div>
 
       {transcript.length === 0 ? (
-        <div className="rounded-md border border-dashed border-border bg-secondary/30 p-6 text-center text-xs text-muted-foreground">
-          {showPending && (
-            <span className="inline-flex items-center gap-2"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Transcribing audio from the video…</span>
+        <div className="space-y-3">
+          <div className="rounded-md border border-dashed border-border bg-secondary/30 p-6 text-center text-xs text-muted-foreground">
+            {showPending && (
+              <span className="inline-flex items-center gap-2"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Transcribing audio from the video…</span>
+            )}
+            {showUnsupported && (
+              <div className="space-y-1.5">
+                <div className="font-medium text-foreground/80">Transcript not available</div>
+                <div>We couldn't auto-resolve a direct audio file from this URL. Paste a direct .mp4 / .m3u8 below to enable speech-to-text — your player URL stays unchanged.</div>
+              </div>
+            )}
+            {showFailed && (
+              <div className="space-y-2">
+                <div>Transcription failed.</div>
+                <Button size="sm" variant="outline" onClick={() => retry()} disabled={retrying} className="h-7 text-xs">
+                  {retrying ? <Loader2 className="mr-1.5 h-3 w-3 animate-spin" /> : null}
+                  Retry transcription
+                </Button>
+              </div>
+            )}
+            {showEmpty && "Transcript not available for this video."}
+          </div>
+
+          {showOverride && (
+            <form onSubmit={submitOverride} className="rounded-md border border-border bg-secondary/20 p-3">
+              <div className="mb-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                Transcription source override
+              </div>
+              <div className="mb-2 text-[11px] text-muted-foreground">
+                Player keeps using your original URL. This is only used to fetch audio for the transcript.
+              </div>
+              <div className="flex gap-2">
+                <Input
+                  value={overrideUrl}
+                  onChange={(e) => setOverrideUrl(e.target.value)}
+                  placeholder="https://…/video.mp4"
+                  className="h-8 flex-1 text-xs"
+                />
+                <Button type="submit" size="sm" disabled={retrying || !overrideUrl.trim()} className="h-8 text-xs">
+                  {retrying ? <Loader2 className="mr-1.5 h-3 w-3 animate-spin" /> : null}
+                  Transcribe from this URL
+                </Button>
+              </div>
+            </form>
           )}
-          {showUnsupported && (
-            <div className="space-y-1.5">
-              <div className="font-medium text-foreground/80">Transcript not available</div>
-              <div>Embedded YouTube/Vimeo players don't expose audio for transcription. Provide a direct .mp4 URL to enable speech-to-text.</div>
-            </div>
-          )}
-          {showFailed && (
-            <div className="space-y-2">
-              <div>Transcription failed.</div>
-              <Button size="sm" variant="outline" onClick={retry} disabled={retrying} className="h-7 text-xs">
-                {retrying ? <Loader2 className="mr-1.5 h-3 w-3 animate-spin" /> : null}
-                Retry transcription
-              </Button>
-            </div>
-          )}
-          {showEmpty && "Transcript not available for this video."}
         </div>
       ) : (
         <ScrollArea className="h-72 rounded-md border border-border bg-secondary/20">
