@@ -761,9 +761,30 @@ Deno.serve(async (req) => {
 
     let segments: Segment[] = [];
     if (resolved.kind === "mp4") {
-      segments = await transcribeMp4WithElevenLabs(resolved.url);
+      try {
+        segments = await transcribeMp4WithElevenLabs(resolved.url);
+      } catch (err) {
+        if (err instanceof ElevenLabsConfigurationError) throw err;
+        console.warn("ElevenLabs mp4 failed, falling back to Gemini:", err instanceof Error ? err.message : String(err));
+      }
+      if (!segments.length) {
+        const mp4Res = await fetch(resolved.url, { headers: { ...BROWSER_HEADERS, Referer: pageOrigin(resolved.url) } });
+        if (!mp4Res.ok) throw new Error(`Failed to download media (${mp4Res.status})`);
+        const bytes = new Uint8Array(await mp4Res.arrayBuffer());
+        segments = await transcribeBytesWithGemini(bytes, mp4Res.headers.get("content-type") ?? "video/mp4");
+      }
     } else {
-      segments = await transcribeHlsWithElevenLabs(resolved.url);
+      try {
+        segments = await transcribeHlsWithElevenLabs(resolved.url);
+      } catch (err) {
+        if (err instanceof ElevenLabsConfigurationError) throw err;
+        console.warn("ElevenLabs HLS failed, falling back to Gemini:", err instanceof Error ? err.message : String(err));
+      }
+      if (!segments.length) {
+        console.log("Falling back to Gemini for HLS transcription.");
+        const bytes = await downloadHlsBytes(resolved.url);
+        segments = await transcribeBytesWithGemini(bytes, "video/mp2t");
+      }
     }
     if (!segments.length) {
       throw new Error("Transcription returned no segments. The audio may be silent or unsupported.");
