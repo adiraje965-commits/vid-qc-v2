@@ -1,59 +1,56 @@
-## Add Video Transcript View with Timeline Sync
+## Auto-populate transcripts from the actual video audio
 
-Add a transcript panel below the video player in the Task Detail view. Transcript segments highlight as the video plays, and clicking a segment seeks the player.
+### Why the current behaviour is wrong
 
-### 1. Database
+Today `run-qc` asks Gemini (via the Lovable AI Gateway) to "infer" a transcript from page markdown + key frames. The gateway's chat-completions endpoint does not actually fetch or listen to the video, so the transcript is hallucinated text loosely related to the page — not what is spoken in the video. We need real speech-to-text on the video file itself.
 
-Add a `transcript` column to `qc_tasks` to store timestamped segments:
+### Approach
 
-```sql
-ALTER TABLE public.qc_tasks
-ADD COLUMN transcript jsonb DEFAULT '[]'::jsonb;
-```
+Use the **ElevenLabs** connector (Scribe speech-to-text). ElevenLabs STT accepts a public audio/video URL or a file upload and returns word-level timestamps which we group into 2-6s segments. This works for direct `.mp4` / Bajaj video URLs. For YouTube/Vimeo (no public media URL) we will fall back to a clear "Transcript unavailable for embedded YouTube/Vimeo videos — only direct video files are supported" empty state instead of fabricating one.
 
-Segment shape:
-```ts
-{ start: number; end: number; text: string; speaker?: string }
-```
+### Steps
 
-### 2. Generate transcript in `run-qc` edge function
+1. **Add ElevenLabs connector**
+   - Call `standard_connectors--connect` with `connector_id: elevenlabs` so `ELEVENLABS_API_KEY` is available to edge functions. (Direct API, not gateway — ElevenLabs is `uses connector gateway: false`.)
 
-Update `supabase/functions/run-qc/index.ts` so that, alongside the QC analysis, Gemini also returns a transcript array. Two approaches:
+2. **New edge function `transcribe-video`** (`supabase/functions/transcribe-video/index.ts`)
+   - Input: `{ taskId, videoUrl }`.
+   - If `videoUrl` is YouTube / Vimeo / missing → write `transcript: []` and a small marker (`transcript_status: "unsupported_source"`) and return.
+   - Otherwise POST to `https://api.elevenlabs.io/v1/speech-to-text` with:
+     - `model_id: scribe_v1`
+     - `cloud_storage_url: <videoUrl>` (Scribe accepts remote URLs; if the URL is not directly fetchable we stream-download with `fetch` and forward as multipart `file`).
+     - `timestamps_granularity: "word"`, `diarize: true`.
+   - Group the returned words into segments of ~3s (break on speaker change or sentence punctuation), shape `{ start, end, text, speaker }`.
+   - Persist via service-role client to `qc_tasks.transcript`.
 
-- **Primary**: Ask Gemini (`google/gemini-2.5-pro`) to generate a timestamped transcript from the video URL in the same call that does QC, by extending the JSON schema to include a `transcript: [{start, end, text, speaker?}]` field.
-- **Fallback**: If the model can't access the video directly (e.g. Bajaj embeds), produce a synthesized transcript from `page_markdown` + key frames with approximate timestamps, clearly marked as inferred.
+3. **Wire it into `run-qc`**
+   - Remove the `transcript` field from the Gemini tool schema and prompt — Gemini should no longer invent transcripts.
+   - After `run-qc` finishes its QC update, fire-and-forget invoke `transcribe-video` with the same `taskId` + `videoUrl` (don't block QC completion on STT, which can take 10-60s on long clips).
+   - The existing realtime subscription on `qc_tasks` in `TaskDetail.tsx` will refresh the transcript panel as soon as `transcribe-video` writes the row.
 
-Persist the array to `qc_tasks.transcript`.
+4. **Schema**
+   - Add `transcript_status text` (nullable) to `qc_tasks` so the UI can distinguish `pending`, `ready`, `unsupported_source`, `failed`. Migration via the migration tool.
 
-### 3. Type updates
+5. **UI updates (`src/pages/TaskDetail.tsx`)**
+   - Replace the current generic empty state with three states driven by `transcript_status`:
+     - `pending` → spinner + "Transcribing audio…"
+     - `unsupported_source` → "Transcript not available — embedded YouTube/Vimeo player. Provide a direct .mp4 to enable transcription."
+     - `failed` → error + retry button that re-invokes `transcribe-video`.
+   - Keep existing timeline-sync, click-to-seek, search, and copy-all behaviour.
 
-- `src/integrations/supabase/types.ts` regenerates automatically.
-- Add `TranscriptSegment` and `transcript: TranscriptSegment[]` to `QcTask` in `src/lib/qc-types.ts`.
-
-### 4. UI — `src/pages/TaskDetail.tsx`
-
-Add a new `TranscriptPanel` section directly below the player card (above Severity Breakdown on the left column).
-
-Features:
-- Scrollable list (using `ScrollArea`) of segments showing `[mm:ss] text`.
-- Active segment (where `currentTime` is within `[start, end]`) is highlighted with `bg-primary/10` and a left border, and auto-scrolls into view.
-- Click a segment → calls existing `seek(start)` to jump the video.
-- Header row: title "Transcript", a search input to filter segments, and a copy-all button.
-- Empty state: "Transcript not available for this video" when `transcript` is empty.
-- While `task.status === "processing"`, show a skeleton loader.
-
-Implementation notes:
-- Track active index via a `useEffect` watching `currentTime`.
-- Use a `ref` map to scroll the active row into view with `scrollIntoView({ block: "nearest", behavior: "smooth" })`.
-- Reuse existing `currentTime` / `seek` already wired to `videoRef`.
-
-### 5. Realtime
-
-The existing realtime subscription on `qc_tasks` already refetches the row on update, so the transcript will appear live as soon as `run-qc` writes it.
+6. **Type updates**
+   - `src/lib/qc-types.ts`: add `transcript_status?: "pending" | "ready" | "unsupported_source" | "failed" | null` to `QcTask`.
 
 ### Files touched
 
-- New migration adding `transcript` column
-- `supabase/functions/run-qc/index.ts` — extend prompt + persist transcript
-- `src/lib/qc-types.ts` — add types
-- `src/pages/TaskDetail.tsx` — render `TranscriptPanel` with sync + click-to-seek
+- `standard_connectors--connect` (ElevenLabs)
+- New migration: add `transcript_status` column
+- New `supabase/functions/transcribe-video/index.ts`
+- `supabase/functions/run-qc/index.ts` — drop transcript prompt, kick off `transcribe-video`
+- `src/lib/qc-types.ts` — add `transcript_status`
+- `src/pages/TaskDetail.tsx` — status-aware transcript panel + retry
+
+### Notes / limitations
+
+- YouTube and Vimeo embeds intentionally do not expose an audio stream; real transcription there requires a separate yt-dlp-style backend, which we are not adding now. We surface this clearly instead of faking it.
+- Existing tasks created before this change will keep their old (inferred) transcript; running QC again on the same video will overwrite it with the real one.
