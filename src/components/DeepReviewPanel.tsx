@@ -7,6 +7,25 @@ import { Eye, Loader2 } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import { getLocalTask, isLocalId } from "@/lib/local-qc";
 import { classifyResolverError } from "@/components/DeepReviewErrorPanel";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+
+const BUSINESS_PERSONAS: { key: string; label: string; persona: string }[] = [
+  { key: "personal-loan", label: "Personal Loan", persona: "First-time Bajaj Finance customer evaluating a personal loan" },
+  { key: "two-wheeler-loan", label: "Two Wheeler Loan", persona: "Young salaried buyer comparing two-wheeler loan options on Bajaj Finance" },
+  { key: "new-car-loan", label: "New Car Loan", persona: "First-time car buyer evaluating a Bajaj Finance new car loan" },
+  { key: "used-car-loan", label: "Used Car Loan", persona: "Budget-conscious buyer evaluating a Bajaj Finance used car loan" },
+  { key: "consumer-durable-loan", label: "Consumer Durable Loan (Electronics)", persona: "Shopper considering No Cost EMI on electronics via Bajaj Finance Consumer Durable Loan" },
+  { key: "business-loan", label: "Business Loan", persona: "SME owner evaluating a Bajaj Finance unsecured business loan for working capital" },
+  { key: "professional-loan", label: "Professional Loan", persona: "Self-employed doctor/CA evaluating a Bajaj Finance professional loan" },
+  { key: "gold-loan", label: "Gold Loan", persona: "Customer needing quick liquidity evaluating a Bajaj Finance gold loan" },
+  { key: "home-loan", label: "Home Loan", persona: "Mid-career family evaluating a Bajaj Housing Finance home loan" },
+  { key: "loan-against-securities", label: "Loan Against Securities", persona: "Investor exploring a Bajaj Finance loan against shares/mutual funds without liquidating holdings" },
+  { key: "tractor-finance", label: "Tractor Finance", persona: "Farmer evaluating a Bajaj Finance tractor loan for farm productivity" },
+  { key: "insurance", label: "Insurance", persona: "Policy seeker comparing insurance plans on Bajaj Markets" },
+  { key: "demat", label: "DEMAT", persona: "New retail investor opening a Bajaj Broking DEMAT account" },
+  { key: "mutual-fund", label: "Mutual Fund", persona: "First-time SIP investor exploring mutual funds on Bajaj Finserv" },
+  { key: "fd", label: "Fixed Deposit (FD)", persona: "Risk-averse saver comparing Bajaj Finance Fixed Deposit rates" },
+];
 
 interface Props {
   taskId: string;
