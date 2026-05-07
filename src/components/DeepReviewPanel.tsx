@@ -1,9 +1,11 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Eye, Loader2 } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
+import { getLocalTask, isLocalId } from "@/lib/local-qc";
 
 interface Props {
   taskId: string;
@@ -12,18 +14,46 @@ interface Props {
 }
 
 export function DeepReviewPanel({ taskId, videoUrl, pageContext }: Props) {
+  const navigate = useNavigate();
   const [running, setRunning] = useState(false);
   const [persona, setPersona] = useState("First-time Bajaj Finance customer evaluating a personal loan");
+
+  const ensureCloudTask = async () => {
+    if (!isLocalId(taskId)) return taskId;
+    const localTask = getLocalTask(taskId);
+    if (!localTask) throw new Error("Local task not found. Please scan the video again.");
+    const { data, error } = await supabase
+      .from("qc_tasks")
+      .insert({
+        url: localTask.url,
+        status: "completed",
+        video_url: localTask.video_url,
+        page_title: localTask.page_title,
+        page_markdown: localTask.page_markdown,
+        thumbnail_url: localTask.thumbnail_url,
+        detected_videos: localTask.detected_videos ?? [],
+        video_count: localTask.video_count ?? 1,
+        transcript_status: "pending",
+        analysis_summary: "Ready for real video QC. Click Run Deep Review to analyze the actual video frame by frame.",
+        owner_id: null,
+      })
+      .select("id")
+      .single();
+    if (error) throw error;
+    return data.id;
+  };
 
   const run = async () => {
     setRunning(true);
     try {
+      const cloudTaskId = await ensureCloudTask();
       const { data, error } = await supabase.functions.invoke("deep-video-review", {
-        body: { taskId, videoUrl, pageContext, persona },
+        body: { taskId: cloudTaskId, videoUrl, pageContext, persona },
       });
       if (error) throw error;
       if ((data as any)?.error) throw new Error((data as any).error);
       toast({ title: "Deep review complete", description: `${(data as any)?.issues ?? 0} real issues · score ${(data as any)?.overall ?? "—"}` });
+      if (cloudTaskId !== taskId) navigate(`/task/${cloudTaskId}`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       toast({ title: "Deep review failed", description: msg, variant: "destructive" });
