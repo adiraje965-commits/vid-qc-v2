@@ -84,6 +84,7 @@ export default function TaskDetail() {
   const score = task.overall_score ?? 0;
   const verdict = getVerdict(task.overall_score, task.status);
   const totalIssues = issues.length;
+  const liveCaptureUrl = [task.media_url, task.video_url].find((url) => url && /\.(mp4|webm|mov|m3u8)(\?|#|$)/i.test(url)) ?? null;
   const sevCounts: { s: Severity; n: number; label: string }[] = [
     { s: "critical", n: task.critical_count, label: "Critical" },
     { s: "high", n: task.high_count, label: "High" },
@@ -237,11 +238,11 @@ export default function TaskDetail() {
               <DeepReviewPanel taskId={task.id} videoUrl={task.video_url} pageContext={task.page_markdown} />
             )}
 
-            {task.video_url && /\.(mp4|webm|mov|m3u8)(\?|#|$)/i.test(task.video_url) && task.transcript_status !== "ready" && !isLocalId(task.id) && (
+            {liveCaptureUrl && task.transcript_status !== "ready" && !isLocalId(task.id) && (
               <div id="live-capture">
                 <VideoCapture
                   taskId={task.id}
-                  videoUrl={task.video_url}
+                  videoUrl={liveCaptureUrl}
                   pageContext={task.page_markdown}
                   autoStart={false}
                 />
