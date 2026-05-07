@@ -187,6 +187,8 @@ async function resolveMediaUrl(input: string, depth = 0): Promise<ResolvedMedia>
     if (best) { logResolve("matched via firecrawl links", best); found = best; }
   }
   if (!found) {
+    const isKpoint = /kpoint|videos\.bajajfinserv\.in/i.test(page.finalUrl) || /kpoint|videos\.bajajfinserv\.in/i.test(input);
+    if (isKpoint) return { kind: "none", reason: "Bajaj kapsule (kpoint) videos use signed/dynamic CDN URLs that aren't exposed in HTML. Use Live Capture to record the player in-browser." };
     if (page.status >= 400) return { kind: "none", reason: `Source returned ${page.status} and no media URL found.` };
     return { kind: "none", reason: "No direct media file found inside the page. If it's a DRM stream, use Live Capture." };
   }
