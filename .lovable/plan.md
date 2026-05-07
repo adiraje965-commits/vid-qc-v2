@@ -1,27 +1,48 @@
-## Diagnosis
+## Goal
 
-Deep Review is failing before Gemini sees the video. The current `deep-video-review` resolver falls back to Firecrawl, but it only scans `rawHtml` plus links for literal `.mp4` / `.m3u8` URLs. The deployed logs show Firecrawl was reached, but no direct media URL was found.
+When Deep Review fails, show a clear, actionable error panel that tells the user *why* (kpoint signed CDN, HLS/DRM, YouTube/Vimeo, host-blocked download, generic) and points them to the right next step (Live Capture or transcript paste), instead of the current bare red one-liner.
 
-The transcript function has a stronger resolver than Deep Review: it keeps Firecrawl `extraLinks`, decodes more JSON/script patterns, scans base64-hidden URLs, and uses a `filterLinksForMedia` fallback. Deep Review is missing some of those pieces, so it can fail even when Firecrawl successfully fetched the page.
+## Scope
 
-## Plan
+Frontend only. Backend already returns descriptive `error_message` strings (e.g. "Bajaj kapsule (kpoint) videos use signed/dynamic CDN URLs…", "DRM/encrypted HLS stream — use Live Capture instead.", "Resolved to HLS (.m3u8)…"). We just classify and present them well.
 
-1. **Bring Deep Review resolver to parity with the transcript resolver**
-   - Add resolver logging so failures show exactly whether Firecrawl returned HTML/links and where extraction stopped.
-   - Add `extraLinks` to the Firecrawl page result instead of flattening links into HTML only.
-   - Add the missing extraction passes from `transcribe-video`: JSON-LD, `JSON.parse("...")` blobs, base64 URL decoding, Firecrawl link filtering, and `application/octet-stream` media detection.
+## Changes
 
-2. **Persist resolved media metadata before Gemini processing**
-   - When Deep Review resolves the actual media URL, update the task with `media_url` and `media_kind`.
-   - This lets the transcript/live UI know the true stream/file source and makes future debugging visible on the task.
+### 1. New component: `src/components/DeepReviewErrorPanel.tsx`
 
-3. **Improve failed-task state**
-   - On Deep Review failure, mark the task as `failed` and set `transcript_status` to `failed` instead of leaving it as completed with only an error message.
-   - Keep the current friendly fallback message for unsupported DRM/HLS cases.
+- Props: `errorMessage: string`, `onUseLiveCapture?: () => void`, `videoUrl?: string`.
+- Classifier function `classifyResolverError(msg)` returns one of:
+  - `kpoint` — matches /kpoint|bajajfinserv|kapsule/i
+  - `drm_hls` — matches /DRM|encrypted|HLS|\.m3u8/i
+  - `youtube_vimeo` — matches /YouTube|Vimeo/i
+  - `host_blocked` — matches /403|blocked|Host may block|server-side download/i
+  - `no_media` — matches /No direct media file/i
+  - `unknown` — fallback
+- Renders an `Alert` (destructive) with:
+  - Title: short human label ("Signed CDN video (Bajaj kapsule)", "DRM / HLS stream", etc.)
+  - Description: the raw resolver reason in muted text + a one-line "What to do" recommendation.
+  - Action button(s):
+    - For `kpoint`, `drm_hls`, `youtube_vimeo`, `host_blocked`: primary button **"Use Live Capture"** that scrolls to / focuses the `VideoCapture` panel (via `document.getElementById("live-capture")?.scrollIntoView`).
+    - For `no_media` / `unknown`: secondary **"Open source page"** link to `videoUrl`.
+    - Always: small **"Copy error"** ghost button.
 
-4. **Deploy and verify against the current failing task**
-   - Deploy `deep-video-review`.
-   - Invoke it on task `d92c7f4f-3cf0-45e7-89a8-21b39da10838` with its Bajaj kapsule URL.
-   - Check function logs and the task row to confirm either:
-     - the real media URL is resolved and review starts, or
-     - the remaining blocker is clearly identified as DRM/no exposed media source rather than a generic fetch failure.
+### 2. `src/pages/TaskDetail.tsx`
+
+- Replace the current line-149 inline red div with `<DeepReviewErrorPanel errorMessage={task.error_message} videoUrl={task.video_url} />` (only when `task.status === "failed"` and an error message exists).
+- Add `id="live-capture"` to the wrapper around `<VideoCapture …/>` so the action button can scroll to it.
+- Keep behavior unchanged for non-deep-review failures (the same panel handles them gracefully via the `unknown` branch).
+
+### 3. `src/components/DeepReviewPanel.tsx`
+
+- After `supabase.functions.invoke` rejects, also surface the classified short label in the toast title (e.g. "Deep review failed · Signed CDN video"), keeping the description as the raw message. Pure presentation, no logic change.
+
+## Out of scope
+
+- No backend / resolver changes.
+- No new DB columns; we keep using existing `error_message`.
+- No changes to Live Capture behavior itself.
+
+## Verification
+
+- Trigger Deep Review on the existing failing Bajaj kapsule task → expect the new "Signed CDN video (Bajaj kapsule)" panel with a Live Capture CTA that scrolls to the capture component.
+- Manually set `error_message` to an HLS / YouTube / generic string in dev to confirm each branch renders the right label and CTA.

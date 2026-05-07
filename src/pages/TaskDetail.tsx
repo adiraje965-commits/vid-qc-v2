@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { ArrowLeft, ExternalLink, Loader2, AlertTriangle, ShieldAlert, Activity, Sparkles, Copy, Search, FileText, Upload, Clock3, Gauge, ListChecks, Radio } from "lucide-react";
 import { VideoCapture } from "@/components/VideoCapture";
 import { DeepReviewPanel } from "@/components/DeepReviewPanel";
+import { DeepReviewErrorPanel } from "@/components/DeepReviewErrorPanel";
 import type { LucideIcon } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 
@@ -145,10 +146,8 @@ export default function TaskDetail() {
           </div>
         </section>
 
-        {task.status === "failed" && (
-          <div className="surface-card mt-4 border-severity-critical/40 p-4 text-sm text-severity-critical">
-            Analysis failed: {task.error_message}
-          </div>
+        {task.status === "failed" && task.error_message && (
+          <DeepReviewErrorPanel errorMessage={task.error_message} videoUrl={task.video_url} />
         )}
 
         <div className="mt-5 grid grid-cols-1 gap-5 lg:grid-cols-[1fr_400px]">
@@ -239,12 +238,14 @@ export default function TaskDetail() {
             )}
 
             {task.video_url && /\.(mp4|webm|mov|m3u8)(\?|#|$)/i.test(task.video_url) && task.transcript_status !== "ready" && !isLocalId(task.id) && (
-              <VideoCapture
-                taskId={task.id}
-                videoUrl={task.video_url}
-                pageContext={task.page_markdown}
-                autoStart={false}
-              />
+              <div id="live-capture">
+                <VideoCapture
+                  taskId={task.id}
+                  videoUrl={task.video_url}
+                  pageContext={task.page_markdown}
+                  autoStart={false}
+                />
+              </div>
             )}
 
             {/* Transcript */}
