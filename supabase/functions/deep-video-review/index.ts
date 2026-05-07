@@ -381,22 +381,25 @@ Deno.serve(async (req) => {
     if (resolved.kind === "none") {
       throw new Error(resolved.reason);
     }
-    if (resolved.kind === "hls") {
-      await supabase.from("qc_tasks").update({ media_url: resolved.url, media_kind: "hls" }).eq("id", taskId);
-      throw new Error("Resolved to HLS (.m3u8). Gemini Files API needs a direct .mp4/.webm — use Live Capture for HLS streams.");
-    }
     console.log("Resolved to:", resolved.url);
-    await supabase.from("qc_tasks").update({ media_url: resolved.url, media_kind: "mp4", status: "processing", error_message: null }).eq("id", taskId);
+    await supabase.from("qc_tasks").update({ media_url: resolved.url, media_kind: resolved.kind, status: "processing", error_message: null }).eq("id", taskId);
 
     // 2) Download video bytes
-    const vRes = await fetch(resolved.url, { redirect: "follow", headers: { ...BROWSER_HEADERS, Referer: pageOrigin(resolved.url), Accept: "video/*,*/*" } });
-    if (!vRes.ok) throw new Error(`Could not fetch resolved video (${vRes.status}). Host may block server-side downloads — try Live Capture.`);
-    let ct = (vRes.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
-    const urlExt = resolved.url.split("?")[0].split("#")[0].toLowerCase();
-    if (!ct || ct === "application/octet-stream" || !/^video\//i.test(ct)) {
-      ct = urlExt.endsWith(".webm") ? "video/webm" : "video/mp4";
+    let ct = "video/mp4";
+    let buf: Uint8Array;
+    if (resolved.kind === "hls") {
+      buf = await downloadHlsBytes(resolved.url);
+      ct = "video/mp2t";
+    } else {
+      const vRes = await fetch(resolved.url, { redirect: "follow", headers: { ...BROWSER_HEADERS, Referer: pageOrigin(resolved.url), Accept: "video/*,*/*" } });
+      if (!vRes.ok) throw new Error(`Could not fetch resolved video (${vRes.status}). Host may block server-side downloads — try Live Capture.`);
+      ct = (vRes.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+      const urlExt = resolved.url.split("?")[0].split("#")[0].toLowerCase();
+      if (!ct || ct === "application/octet-stream" || !/^video\//i.test(ct)) {
+        ct = urlExt.endsWith(".webm") ? "video/webm" : "video/mp4";
+      }
+      buf = new Uint8Array(await vRes.arrayBuffer());
     }
-    const buf = new Uint8Array(await vRes.arrayBuffer());
     console.log(`Downloaded ${(buf.byteLength / 1024 / 1024).toFixed(1)} MB (${ct})`);
 
     // 2) Upload to Google AI Files API
