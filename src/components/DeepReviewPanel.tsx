@@ -36,7 +36,8 @@ interface Props {
 export function DeepReviewPanel({ taskId, videoUrl, pageContext }: Props) {
   const navigate = useNavigate();
   const [running, setRunning] = useState(false);
-  const [persona, setPersona] = useState("First-time Bajaj Finance customer evaluating a personal loan");
+  const [business, setBusiness] = useState(BUSINESS_PERSONAS[0].key);
+  const [persona, setPersona] = useState(BUSINESS_PERSONAS[0].persona);
 
   const ensureCloudTask = async () => {
     if (!isLocalId(taskId)) return taskId;
