@@ -207,28 +207,6 @@ async function downloadHlsBytes(hlsUrl: string): Promise<Uint8Array> {
   return merged;
 }
 
-let ffmpegInstance: any = null;
-async function remuxTransportStreamToMp4(bytes: Uint8Array): Promise<Uint8Array> {
-  if (!ffmpegInstance) {
-    const mod: any = await import("https://esm.sh/@ffmpeg/ffmpeg@0.12.10?bundle");
-    const FFmpeg = mod.FFmpeg ?? mod.default?.FFmpeg;
-    ffmpegInstance = new FFmpeg();
-    await ffmpegInstance.load({
-      coreURL: "https://esm.sh/@ffmpeg/core-st@0.12.6/dist/umd/ffmpeg-core.js",
-      wasmURL: "https://esm.sh/@ffmpeg/core-st@0.12.6/dist/umd/ffmpeg-core.wasm",
-    });
-  }
-  const suffix = crypto.randomUUID();
-  const inputName = `input-${suffix}.ts`;
-  const outputName = `output-${suffix}.mp4`;
-  await ffmpegInstance.writeFile(inputName, bytes);
-  await ffmpegInstance.exec(["-i", inputName, "-c", "copy", "-movflags", "faststart", outputName]);
-  const out = await ffmpegInstance.readFile(outputName);
-  try { await ffmpegInstance.deleteFile(inputName); } catch {}
-  try { await ffmpegInstance.deleteFile(outputName); } catch {}
-  return out instanceof Uint8Array ? out : new Uint8Array(out);
-}
-
 async function resolveMediaUrl(input: string, depth = 0): Promise<ResolvedMedia> {
   if (depth > 2) return { kind: "none", reason: "Too many embed redirects." };
   if (/youtube\.com|youtu\.be|vimeo\.com/i.test(input)) return { kind: "none", reason: "YouTube/Vimeo not supported here — use Live Capture." };
@@ -411,13 +389,7 @@ Deno.serve(async (req) => {
     let buf: Uint8Array;
     if (resolved.kind === "hls") {
       buf = await downloadHlsBytes(resolved.url);
-      try {
-        buf = await remuxTransportStreamToMp4(buf);
-        ct = "video/mp4";
-      } catch (e) {
-        console.warn("HLS remux failed; uploading transport stream", e instanceof Error ? e.message : String(e));
-        ct = "video/mp2t";
-      }
+      ct = "video/mp2t";
     } else {
       const vRes = await fetch(resolved.url, { redirect: "follow", headers: { ...BROWSER_HEADERS, Referer: pageOrigin(resolved.url), Accept: "video/*,*/*" } });
       if (!vRes.ok) throw new Error(`Could not fetch resolved video (${vRes.status}). Host may block server-side downloads — try Live Capture.`);
