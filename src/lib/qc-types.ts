@@ -30,6 +30,7 @@ export interface QcTask {
   tags?: string[];
   approval_status?: string;
   approval_note?: string | null;
+  bucket_breakdown?: import("./qc-rubric").BucketBreakdown | null;
   created_at: string;
   updated_at: string;
 }
