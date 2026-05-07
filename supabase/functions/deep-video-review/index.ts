@@ -411,7 +411,13 @@ Deno.serve(async (req) => {
     let buf: Uint8Array;
     if (resolved.kind === "hls") {
       buf = await downloadHlsBytes(resolved.url);
-      ct = "video/mp2t";
+      try {
+        buf = await remuxTransportStreamToMp4(buf);
+        ct = "video/mp4";
+      } catch (e) {
+        console.warn("HLS remux failed; uploading transport stream", e instanceof Error ? e.message : String(e));
+        ct = "video/mp2t";
+      }
     } else {
       const vRes = await fetch(resolved.url, { redirect: "follow", headers: { ...BROWSER_HEADERS, Referer: pageOrigin(resolved.url), Accept: "video/*,*/*" } });
       if (!vRes.ok) throw new Error(`Could not fetch resolved video (${vRes.status}). Host may block server-side downloads — try Live Capture.`);
