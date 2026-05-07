@@ -343,9 +343,11 @@ Deno.serve(async (req) => {
       throw new Error(resolved.reason);
     }
     if (resolved.kind === "hls") {
+      await supabase.from("qc_tasks").update({ media_url: resolved.url, media_kind: "hls" }).eq("id", taskId);
       throw new Error("Resolved to HLS (.m3u8). Gemini Files API needs a direct .mp4/.webm — use Live Capture for HLS streams.");
     }
     console.log("Resolved to:", resolved.url);
+    await supabase.from("qc_tasks").update({ media_url: resolved.url, media_kind: "mp4", status: "processing", error_message: null }).eq("id", taskId);
 
     // 2) Download video bytes
     const vRes = await fetch(resolved.url, { redirect: "follow", headers: { ...BROWSER_HEADERS, Referer: pageOrigin(resolved.url), Accept: "video/*,*/*" } });
