@@ -504,6 +504,7 @@ function TranscriptPanel({
   const [overrideUrl, setOverrideUrl] = useState("");
   const [manualTranscript, setManualTranscript] = useState("");
   const rowRefs = useRef<Record<number, HTMLButtonElement | null>>({});
+  const autoTranscriptStarted = useRef(false);
 
 
   const activeIdx = useMemo(() => {
@@ -559,6 +560,12 @@ function TranscriptPanel({
       setRetrying(false);
     }
   };
+
+  useEffect(() => {
+    if (autoTranscriptStarted.current || taskId.startsWith("local_") || transcript.length > 0 || transcriptStatus !== "pending") return;
+    autoTranscriptStarted.current = true;
+    retry();
+  }, [taskId, transcript.length, transcriptStatus]);
 
   const submitOverride = (e: React.FormEvent) => {
     e.preventDefault();
