@@ -17,6 +17,7 @@ import { ArrowLeft, ExternalLink, Loader2, AlertTriangle, ShieldAlert, Activity,
 import { VideoCapture } from "@/components/VideoCapture";
 import { DeepReviewPanel } from "@/components/DeepReviewPanel";
 import { DeepReviewErrorPanel } from "@/components/DeepReviewErrorPanel";
+import { BucketScoreCard } from "@/components/BucketScoreCard";
 import type { LucideIcon } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 
