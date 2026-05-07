@@ -456,7 +456,7 @@ Score buckets 0-100: Technical, Brand, Strategic, Contextual. Return 4-12 ground
     const msg = e instanceof Error ? e.message : String(e);
     console.error("deep-video-review error:", msg);
     if (taskId) {
-      try { await supabase.from("qc_tasks").update({ error_message: msg }).eq("id", taskId); } catch {}
+      try { await supabase.from("qc_tasks").update({ status: "failed", transcript_status: "failed", error_message: msg }).eq("id", taskId); } catch {}
     }
     return new Response(JSON.stringify({ error: msg }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
   }
