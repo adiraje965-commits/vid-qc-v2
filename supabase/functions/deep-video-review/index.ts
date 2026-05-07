@@ -72,7 +72,7 @@ const QC_SCHEMA = {
       },
     },
   },
-  required: ["analysis_summary", "what_a_user_feels", "customer_intent", "topic_match_score", "bucket_scores", "issues", "key_frames"],
+  required: ["analysis_summary", "what_a_user_feels", "customer_intent", "topic_match_score", "bucket_scores", "transcript", "issues", "key_frames"],
 };
 
 function computeOverall(b: any, issues: any[]) {
@@ -174,14 +174,15 @@ Deno.serve(async (req) => {
     // 4) Ask Gemini 2.5 Pro to watch it
     const systemPrompt = `You are a senior Video QC reviewer for Bajaj Finance, a major Indian financial services brand. You can SEE and HEAR the attached video. Behave like a real human reviewer:
 
-- Watch end-to-end. Note REAL timestamps (in seconds) for everything you flag.
+- Watch end-to-end FRAME-BY-FRAME. Note REAL timestamps (in seconds) for everything you flag.
+- Produce a FULL TIMESTAMPED TRANSCRIPT of all spoken voiceover/dialogue (Hindi/English/Hinglish ok — keep the original language). Break into short segments of 3-8 seconds. Include speaker if obvious.
 - OCR every super, lower-third, CTA, price, EMI, T&C, RBI line, disclaimer.
 - Listen to the voiceover. Flag voice/visual mismatches, unclear pronunciation, missing CTA, missing legal copy.
 - Judge pacing: hook in first 3 seconds? Does the message land? Does the CTA arrive too late?
 - Brand: Bajaj Finance logo present? Brand colors (deep blue / white)? Persona consistent?
 - Be strict. Do NOT invent issues. Only flag what you actually see or hear.
 
-Score buckets 0-100: Technical, Brand, Strategic, Contextual. Return 4-12 grounded issues with REAL timestamps and 4-8 key_frames.`;
+Score buckets 0-100: Technical, Brand, Strategic, Contextual. Return 4-12 grounded issues with REAL timestamps and 4-8 key_frames. Transcript MUST cover the entire video.`;
 
     const userText = `${persona ? `PERSONA: ${persona}\n\n` : ""}LANDING PAGE CONTEXT:\n${(pageContext ?? "").slice(0, 4000)}\n\nWatch the attached video and return your honest QC review as JSON.`;
 
