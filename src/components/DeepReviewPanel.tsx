@@ -47,13 +47,13 @@ export function DeepReviewPanel({ taskId, videoUrl, pageContext }: Props) {
     setRunning(true);
     try {
       const cloudTaskId = await ensureCloudTask();
+      if (cloudTaskId !== taskId) navigate(`/task/${cloudTaskId}`);
       const { data, error } = await supabase.functions.invoke("deep-video-review", {
         body: { taskId: cloudTaskId, videoUrl, pageContext, persona },
       });
       if (error) throw error;
       if ((data as any)?.error) throw new Error((data as any).error);
       toast({ title: "Deep review complete", description: `${(data as any)?.issues ?? 0} real issues · score ${(data as any)?.overall ?? "—"}` });
-      if (cloudTaskId !== taskId) navigate(`/task/${cloudTaskId}`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       toast({ title: "Deep review failed", description: msg, variant: "destructive" });
