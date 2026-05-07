@@ -30,6 +30,19 @@ const QC_SCHEMA = {
       },
       required: ["technical", "brand", "strategic", "contextual"],
     },
+    transcript: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          start: { type: "number" },
+          end: { type: "number" },
+          text: { type: "string" },
+          speaker: { type: "string" },
+        },
+        required: ["start", "end", "text"],
+      },
+    },
     issues: {
       type: "array",
       items: {
@@ -59,7 +72,7 @@ const QC_SCHEMA = {
       },
     },
   },
-  required: ["analysis_summary", "what_a_user_feels", "customer_intent", "topic_match_score", "bucket_scores", "issues", "key_frames"],
+  required: ["analysis_summary", "what_a_user_feels", "customer_intent", "topic_match_score", "bucket_scores", "transcript", "issues", "key_frames"],
 };
 
 function computeOverall(b: any, issues: any[]) {
@@ -134,12 +147,30 @@ Deno.serve(async (req) => {
     const { videoUrl, pageContext, persona } = body;
     if (!taskId || !videoUrl) throw new Error("taskId and videoUrl required");
 
-    // 1) Download video bytes
-    console.log("Downloading video:", videoUrl);
-    const vRes = await fetch(videoUrl, { redirect: "follow", headers: { "User-Agent": "Mozilla/5.0 LovableQC/1.0", Accept: "video/*,*/*" } });
+    // 1) Resolve URL — if Bajaj kapsule embed (HTML iframe), scrape mp4 from it
+    let resolvedUrl = videoUrl;
+    if (/videos\.bajajfinserv\.in\/kapsule\//i.test(videoUrl)) {
+      console.log("Resolving Bajaj kapsule embed:", videoUrl);
+      const embedRes = await fetch(videoUrl, { redirect: "follow", headers: { "User-Agent": "Mozilla/5.0 LovableQC/1.0" } });
+      if (embedRes.ok) {
+        const html = await embedRes.text();
+        // Look for mp4/m3u8 inside the embed page
+        const m = html.match(/https?:\\?\/\\?\/[^"'\s<>)]+\.(?:mp4|m3u8)(?:\?[^"'\s<>)]*)?/i);
+        if (m) {
+          resolvedUrl = m[0].replace(/\\\//g, "/");
+          console.log("Resolved kapsule to:", resolvedUrl);
+        } else {
+          throw new Error("Bajaj kapsule embed did not expose a direct .mp4 URL. Use Live Capture for this video.");
+        }
+      }
+    }
+
+    // 2) Download video bytes
+    console.log("Downloading video:", resolvedUrl);
+    const vRes = await fetch(resolvedUrl, { redirect: "follow", headers: { "User-Agent": "Mozilla/5.0 LovableQC/1.0", Accept: "video/*,*/*" } });
     if (!vRes.ok) throw new Error(`Could not fetch video (${vRes.status}). Host may block server-side downloads — try Live Capture.`);
     let ct = (vRes.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
-    const urlExt = videoUrl.split("?")[0].split("#")[0].toLowerCase();
+    const urlExt = resolvedUrl.split("?")[0].split("#")[0].toLowerCase();
     const looksLikeVideoUrl = /\.(mp4|webm|mov|m4v|mkv)$/.test(urlExt);
     if (!ct || ct === "application/octet-stream" || /^binary\//.test(ct)) {
       ct = looksLikeVideoUrl ? (urlExt.endsWith(".webm") ? "video/webm" : "video/mp4") : ct || "video/mp4";
@@ -161,14 +192,15 @@ Deno.serve(async (req) => {
     // 4) Ask Gemini 2.5 Pro to watch it
     const systemPrompt = `You are a senior Video QC reviewer for Bajaj Finance, a major Indian financial services brand. You can SEE and HEAR the attached video. Behave like a real human reviewer:
 
-- Watch end-to-end. Note REAL timestamps (in seconds) for everything you flag.
+- Watch end-to-end FRAME-BY-FRAME. Note REAL timestamps (in seconds) for everything you flag.
+- Produce a FULL TIMESTAMPED TRANSCRIPT of all spoken voiceover/dialogue (Hindi/English/Hinglish ok — keep the original language). Break into short segments of 3-8 seconds. Include speaker if obvious.
 - OCR every super, lower-third, CTA, price, EMI, T&C, RBI line, disclaimer.
 - Listen to the voiceover. Flag voice/visual mismatches, unclear pronunciation, missing CTA, missing legal copy.
 - Judge pacing: hook in first 3 seconds? Does the message land? Does the CTA arrive too late?
 - Brand: Bajaj Finance logo present? Brand colors (deep blue / white)? Persona consistent?
 - Be strict. Do NOT invent issues. Only flag what you actually see or hear.
 
-Score buckets 0-100: Technical, Brand, Strategic, Contextual. Return 4-12 grounded issues with REAL timestamps and 4-8 key_frames.`;
+Score buckets 0-100: Technical, Brand, Strategic, Contextual. Return 4-12 grounded issues with REAL timestamps and 4-8 key_frames. Transcript MUST cover the entire video.`;
 
     const userText = `${persona ? `PERSONA: ${persona}\n\n` : ""}LANDING PAGE CONTEXT:\n${(pageContext ?? "").slice(0, 4000)}\n\nWatch the attached video and return your honest QC review as JSON.`;
 
@@ -233,6 +265,8 @@ Score buckets 0-100: Technical, Brand, Strategic, Contextual. Return 4-12 ground
       medium_count: counts.medium,
       low_count: counts.low,
       key_frames: parsed.key_frames ?? [],
+      transcript: parsed.transcript ?? [],
+      transcript_status: parsed.transcript?.length ? "ready" : "pending",
       error_message: null,
     }).eq("id", taskId);
 
