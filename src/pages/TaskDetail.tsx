@@ -110,7 +110,7 @@ export default function TaskDetail() {
                   {verdict.label}
                 </Badge>
                 <Badge variant="outline" className="border-primary/30 bg-primary/10 text-primary">
-                  {task.id.startsWith("local_") ? "Local fallback" : "Cloud analysis"}
+                  {task.id.startsWith("local_") ? "Ready for Cloud review" : "Cloud analysis"}
                 </Badge>
                 {task.transcript_status === "ready" && (
                   <Badge variant="outline" className="border-score-good/30 text-score-good">Transcript ready</Badge>
@@ -234,7 +234,7 @@ export default function TaskDetail() {
               )}
             </div>
 
-            {task.video_url && !isLocalId(task.id) && (
+            {task.video_url && (
               <DeepReviewPanel taskId={task.id} videoUrl={task.video_url} pageContext={task.page_markdown} />
             )}
 
