@@ -165,6 +165,7 @@ async function resolveMediaUrl(input: string, depth = 0): Promise<ResolvedMedia>
   }
   return found;
 }
+const MODEL = "gemini-2.5-pro";
 const SEVERITY_WEIGHTS: Record<string, number> = { critical: 25, high: 15, medium: 8, low: 3 };
 
 const QC_SCHEMA = {
