@@ -145,10 +145,8 @@ export default function TaskDetail() {
           </div>
         </section>
 
-        {task.status === "failed" && (
-          <div className="surface-card mt-4 border-severity-critical/40 p-4 text-sm text-severity-critical">
-            Analysis failed: {task.error_message}
-          </div>
+        {task.status === "failed" && task.error_message && (
+          <DeepReviewErrorPanel errorMessage={task.error_message} videoUrl={task.video_url} />
         )}
 
         <div className="mt-5 grid grid-cols-1 gap-5 lg:grid-cols-[1fr_400px]">
