@@ -238,12 +238,14 @@ export default function TaskDetail() {
             )}
 
             {task.video_url && /\.(mp4|webm|mov|m3u8)(\?|#|$)/i.test(task.video_url) && task.transcript_status !== "ready" && !isLocalId(task.id) && (
-              <VideoCapture
-                taskId={task.id}
-                videoUrl={task.video_url}
-                pageContext={task.page_markdown}
-                autoStart={false}
-              />
+              <div id="live-capture">
+                <VideoCapture
+                  taskId={task.id}
+                  videoUrl={task.video_url}
+                  pageContext={task.page_markdown}
+                  autoStart={false}
+                />
+              </div>
             )}
 
             {/* Transcript */}
