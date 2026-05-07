@@ -39,13 +39,24 @@ function classifyByContentType(ct: string): "mp4" | "hls" | null {
   if (t === "application/octet-stream") return "mp4";
   return null;
 }
-function absolutize(base: string, ref: string): string { try { return new URL(ref, base).toString(); } catch { return ref; } }
+function decodeMediaUrl(raw: string): string {
+  return raw
+    .replace(/\\u0026/gi, "&")
+    .replace(/&amp;/gi, "&")
+    .replace(/&#38;/gi, "&")
+    .replace(/\\\//g, "/");
+}
+function absolutize(base: string, ref: string): string {
+  const cleaned = decodeMediaUrl(ref);
+  try { return new URL(cleaned, base).toString(); } catch { return cleaned; }
+}
 function pageOrigin(url: string): string { try { return new URL(url).origin + "/"; } catch { return url; } }
 
 function collectMediaFromJson(value: unknown, out: string[]) {
   if (!value) return;
   if (typeof value === "string") {
-    if (/^https?:\/\//i.test(value) && MEDIA_EXT_RE.test(value)) out.push(value);
+    const cleaned = decodeMediaUrl(value);
+    if (/^https?:\/\//i.test(cleaned) && MEDIA_EXT_RE.test(cleaned)) out.push(cleaned);
     return;
   }
   if (Array.isArray(value)) { for (const v of value) collectMediaFromJson(v, out); return; }
@@ -88,12 +99,10 @@ function findMediaInHtml(html: string, baseUrl: string): { kind: "mp4" | "hls"; 
   for (const m of html.matchAll(/https?:\/\/[^\s"'<>\\]+\.(?:mp4|m4a|m4v|mp3|webm|wav|ogg|mov)(?:\?[^\s"'<>\\]*)?/gi)) c.push(m[0]);
   for (const m of html.matchAll(/https?:\/\/[^\s"'<>\\]+\.m3u8(?:\?[^\s"'<>\\]*)?/gi)) c.push(m[0]);
   // Escaped URLs in JSON (\/)
-  for (const m of html.matchAll(/https?:\\?\/\\?\/[^"'\s<>)]+\.(?:mp4|webm|mov|m3u8|m4a|m4v|mp3|ogg|wav)(?:\?[^"'\s<>)]*)?/gi)) {
-    c.push(m[0].replace(/\\\//g, "/"));
-  }
+  for (const m of html.matchAll(/https?:\\?\/\\?\/[^"'\s<>)]+\.(?:mp4|webm|mov|m3u8|m4a|m4v|mp3|ogg|wav)(?:\?[^"'\s<>)]*)?/gi)) c.push(decodeMediaUrl(m[0]));
   // Base64-hidden URLs
   for (const m of html.matchAll(/["']([A-Za-z0-9+/=]{60,})["']/g)) {
-    try { const decoded = atob(m[1]); if (/^https?:\/\//i.test(decoded) && MEDIA_EXT_RE.test(decoded)) c.push(decoded); } catch {}
+    try { const decoded = decodeMediaUrl(atob(m[1])); if (/^https?:\/\//i.test(decoded) && MEDIA_EXT_RE.test(decoded)) c.push(decoded); } catch {}
   }
   const best = pickBest(c.filter((u) => /^https?:\/\//i.test(u)));
   if (best) return best;
