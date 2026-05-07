@@ -39,13 +39,24 @@ function classifyByContentType(ct: string): "mp4" | "hls" | null {
   if (t === "application/octet-stream") return "mp4";
   return null;
 }
-function absolutize(base: string, ref: string): string { try { return new URL(ref, base).toString(); } catch { return ref; } }
+function decodeMediaUrl(raw: string): string {
+  return raw
+    .replace(/\\u0026/gi, "&")
+    .replace(/&amp;/gi, "&")
+    .replace(/&#38;/gi, "&")
+    .replace(/\\\//g, "/");
+}
+function absolutize(base: string, ref: string): string {
+  const cleaned = decodeMediaUrl(ref);
+  try { return new URL(cleaned, base).toString(); } catch { return cleaned; }
+}
 function pageOrigin(url: string): string { try { return new URL(url).origin + "/"; } catch { return url; } }
 
 function collectMediaFromJson(value: unknown, out: string[]) {
   if (!value) return;
   if (typeof value === "string") {
-    if (/^https?:\/\//i.test(value) && MEDIA_EXT_RE.test(value)) out.push(value);
+    const cleaned = decodeMediaUrl(value);
+    if (/^https?:\/\//i.test(cleaned) && MEDIA_EXT_RE.test(cleaned)) out.push(cleaned);
     return;
   }
   if (Array.isArray(value)) { for (const v of value) collectMediaFromJson(v, out); return; }
@@ -88,12 +99,10 @@ function findMediaInHtml(html: string, baseUrl: string): { kind: "mp4" | "hls"; 
   for (const m of html.matchAll(/https?:\/\/[^\s"'<>\\]+\.(?:mp4|m4a|m4v|mp3|webm|wav|ogg|mov)(?:\?[^\s"'<>\\]*)?/gi)) c.push(m[0]);
   for (const m of html.matchAll(/https?:\/\/[^\s"'<>\\]+\.m3u8(?:\?[^\s"'<>\\]*)?/gi)) c.push(m[0]);
   // Escaped URLs in JSON (\/)
-  for (const m of html.matchAll(/https?:\\?\/\\?\/[^"'\s<>)]+\.(?:mp4|webm|mov|m3u8|m4a|m4v|mp3|ogg|wav)(?:\?[^"'\s<>)]*)?/gi)) {
-    c.push(m[0].replace(/\\\//g, "/"));
-  }
+  for (const m of html.matchAll(/https?:\\?\/\\?\/[^"'\s<>)]+\.(?:mp4|webm|mov|m3u8|m4a|m4v|mp3|ogg|wav)(?:\?[^"'\s<>)]*)?/gi)) c.push(decodeMediaUrl(m[0]));
   // Base64-hidden URLs
   for (const m of html.matchAll(/["']([A-Za-z0-9+/=]{60,})["']/g)) {
-    try { const decoded = atob(m[1]); if (/^https?:\/\//i.test(decoded) && MEDIA_EXT_RE.test(decoded)) c.push(decoded); } catch {}
+    try { const decoded = decodeMediaUrl(atob(m[1])); if (/^https?:\/\//i.test(decoded) && MEDIA_EXT_RE.test(decoded)) c.push(decoded); } catch {}
   }
   const best = pickBest(c.filter((u) => /^https?:\/\//i.test(u)));
   if (best) return best;
@@ -168,6 +177,34 @@ async function pickHlsVariant(masterUrl: string): Promise<{ url: string; encrypt
     }
     return { url: bestUri ? absolutize(masterUrl, bestUri) : masterUrl, encrypted };
   } catch { return { url: masterUrl, encrypted: false }; }
+}
+
+async function downloadHlsBytes(hlsUrl: string): Promise<Uint8Array> {
+  const manifestRes = await fetch(hlsUrl, { headers: { ...BROWSER_HEADERS, Referer: pageOrigin(hlsUrl) } });
+  if (!manifestRes.ok) throw new Error(`Failed to download HLS manifest (${manifestRes.status}). The signed CDN URL may have expired — retry Deep Review or use Live Capture.`);
+  const manifest = await manifestRes.text();
+  if (/#EXT-X-KEY:[^\n]*METHOD=(?!NONE)[A-Z0-9-]+/i.test(manifest)) throw new Error("DRM/encrypted HLS stream — use Live Capture instead.");
+  const refs = manifest.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !line.startsWith("#"));
+  if (!refs.length) throw new Error("HLS manifest contains no playable media segments — use Live Capture.");
+  const nested = refs.find((ref) => /\.m3u8(\?|#|$)/i.test(ref));
+  if (nested) return downloadHlsBytes(absolutize(hlsUrl, nested));
+
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  const maxBytes = 950 * 1024 * 1024;
+  for (const ref of refs) {
+    const segmentUrl = absolutize(hlsUrl, ref);
+    const res = await fetch(segmentUrl, { headers: { ...BROWSER_HEADERS, Referer: pageOrigin(hlsUrl) } });
+    if (!res.ok) throw new Error(`Failed to download HLS segment (${res.status}). The host may block server-side downloads — use Live Capture.`);
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    total += bytes.byteLength;
+    if (total > maxBytes) throw new Error("HLS stream is too large for Deep Review download — use Live Capture for this long video.");
+    chunks.push(bytes);
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) { merged.set(chunk, offset); offset += chunk.byteLength; }
+  return merged;
 }
 
 async function resolveMediaUrl(input: string, depth = 0): Promise<ResolvedMedia> {
@@ -344,22 +381,25 @@ Deno.serve(async (req) => {
     if (resolved.kind === "none") {
       throw new Error(resolved.reason);
     }
-    if (resolved.kind === "hls") {
-      await supabase.from("qc_tasks").update({ media_url: resolved.url, media_kind: "hls" }).eq("id", taskId);
-      throw new Error("Resolved to HLS (.m3u8). Gemini Files API needs a direct .mp4/.webm — use Live Capture for HLS streams.");
-    }
     console.log("Resolved to:", resolved.url);
-    await supabase.from("qc_tasks").update({ media_url: resolved.url, media_kind: "mp4", status: "processing", error_message: null }).eq("id", taskId);
+    await supabase.from("qc_tasks").update({ media_url: resolved.url, media_kind: resolved.kind, status: "processing", error_message: null }).eq("id", taskId);
 
     // 2) Download video bytes
-    const vRes = await fetch(resolved.url, { redirect: "follow", headers: { ...BROWSER_HEADERS, Referer: pageOrigin(resolved.url), Accept: "video/*,*/*" } });
-    if (!vRes.ok) throw new Error(`Could not fetch resolved video (${vRes.status}). Host may block server-side downloads — try Live Capture.`);
-    let ct = (vRes.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
-    const urlExt = resolved.url.split("?")[0].split("#")[0].toLowerCase();
-    if (!ct || ct === "application/octet-stream" || !/^video\//i.test(ct)) {
-      ct = urlExt.endsWith(".webm") ? "video/webm" : "video/mp4";
+    let ct = "video/mp4";
+    let buf: Uint8Array;
+    if (resolved.kind === "hls") {
+      buf = await downloadHlsBytes(resolved.url);
+      ct = "video/mp2t";
+    } else {
+      const vRes = await fetch(resolved.url, { redirect: "follow", headers: { ...BROWSER_HEADERS, Referer: pageOrigin(resolved.url), Accept: "video/*,*/*" } });
+      if (!vRes.ok) throw new Error(`Could not fetch resolved video (${vRes.status}). Host may block server-side downloads — try Live Capture.`);
+      ct = (vRes.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+      const urlExt = resolved.url.split("?")[0].split("#")[0].toLowerCase();
+      if (!ct || ct === "application/octet-stream" || !/^video\//i.test(ct)) {
+        ct = urlExt.endsWith(".webm") ? "video/webm" : "video/mp4";
+      }
+      buf = new Uint8Array(await vRes.arrayBuffer());
     }
-    const buf = new Uint8Array(await vRes.arrayBuffer());
     console.log(`Downloaded ${(buf.byteLength / 1024 / 1024).toFixed(1)} MB (${ct})`);
 
     // 2) Upload to Google AI Files API
