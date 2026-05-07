@@ -128,6 +128,9 @@ export async function createTaskForVideo(
       }).eq("id", taskId);
       throw invokeError;
     }
+    void supabase.functions.invoke("transcribe-video", {
+      body: { taskId, videoUrl: video.url },
+    }).catch((transcriptError) => console.warn("Transcript auto-start failed", transcriptError));
     return taskId;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

@@ -110,7 +110,7 @@ export default function TaskDetail() {
                   {verdict.label}
                 </Badge>
                 <Badge variant="outline" className="border-primary/30 bg-primary/10 text-primary">
-                  {task.id.startsWith("local_") ? "Local fallback" : "Cloud analysis"}
+                  {task.id.startsWith("local_") ? "Ready for Cloud review" : "Cloud analysis"}
                 </Badge>
                 {task.transcript_status === "ready" && (
                   <Badge variant="outline" className="border-score-good/30 text-score-good">Transcript ready</Badge>
@@ -234,7 +234,7 @@ export default function TaskDetail() {
               )}
             </div>
 
-            {task.video_url && !isLocalId(task.id) && (
+            {task.video_url && (
               <DeepReviewPanel taskId={task.id} videoUrl={task.video_url} pageContext={task.page_markdown} />
             )}
 
@@ -504,6 +504,7 @@ function TranscriptPanel({
   const [overrideUrl, setOverrideUrl] = useState("");
   const [manualTranscript, setManualTranscript] = useState("");
   const rowRefs = useRef<Record<number, HTMLButtonElement | null>>({});
+  const autoTranscriptStarted = useRef(false);
 
 
   const activeIdx = useMemo(() => {
@@ -559,6 +560,12 @@ function TranscriptPanel({
       setRetrying(false);
     }
   };
+
+  useEffect(() => {
+    if (autoTranscriptStarted.current || taskId.startsWith("local_") || transcript.length > 0 || transcriptStatus !== "pending") return;
+    autoTranscriptStarted.current = true;
+    retry();
+  }, [taskId, transcript.length, transcriptStatus]);
 
   const submitOverride = (e: React.FormEvent) => {
     e.preventDefault();
