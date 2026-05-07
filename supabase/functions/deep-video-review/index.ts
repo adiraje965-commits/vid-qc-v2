@@ -247,6 +247,8 @@ Score buckets 0-100: Technical, Brand, Strategic, Contextual. Return 4-12 ground
       medium_count: counts.medium,
       low_count: counts.low,
       key_frames: parsed.key_frames ?? [],
+      transcript: parsed.transcript ?? [],
+      transcript_status: parsed.transcript?.length ? "ready" : "pending",
       error_message: null,
     }).eq("id", taskId);
 
