@@ -99,12 +99,30 @@ export function DeepReviewPanel({ taskId, videoUrl, pageContext }: Props) {
       <p className="mb-2 text-xs text-muted-foreground">
         Server downloads the actual video, uploads it to Google AI's Files API, and lets Gemini 2.5 Pro watch it end-to-end (visual + audio + supers + pacing). Supports videos up to ~2GB / 1hr. Replaces previous QC findings with real ones.
       </p>
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="text-[11px] uppercase tracking-wider text-muted-foreground">Business</label>
+        <Select
+          value={business}
+          onValueChange={(v) => {
+            setBusiness(v);
+            const match = BUSINESS_PERSONAS.find((b) => b.key === v);
+            if (match) setPersona(match.persona);
+          }}
+        >
+          <SelectTrigger className="h-8 w-[220px] text-xs">
+            <SelectValue placeholder="Select business" />
+          </SelectTrigger>
+          <SelectContent className="max-h-72">
+            {BUSINESS_PERSONAS.map((b) => (
+              <SelectItem key={b.key} value={b.key} className="text-xs">{b.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         <label className="text-[11px] uppercase tracking-wider text-muted-foreground">Persona</label>
         <input
           value={persona}
           onChange={(e) => setPersona(e.target.value)}
-          className="flex-1 rounded-md border border-border bg-background px-2 py-1 text-xs"
+          className="min-w-[200px] flex-1 rounded-md border border-border bg-background px-2 py-1 text-xs"
           placeholder="e.g. First-time customer, skeptical buyer, mobile user…"
         />
       </div>
