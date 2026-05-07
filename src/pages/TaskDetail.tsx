@@ -312,55 +312,23 @@ export default function TaskDetail() {
           {/* RIGHT: bucket scores */}
           <aside className="space-y-3 lg:sticky lg:top-20 lg:self-start">
             <div className="surface-card p-5">
-              <div className="mb-3 text-sm font-medium">Score Buckets</div>
+              <div className="mb-3 flex items-center justify-between">
+                <div className="text-sm font-medium">Score Buckets</div>
+                <Badge variant="outline" className="border-primary/30 text-[10px] text-primary">Standards-grounded</Badge>
+              </div>
               <Accordion type="multiple" defaultValue={["brand"]} className="space-y-2">
-                {buckets.map((b) => {
-                  const Icon = BUCKET_ICONS[b.key];
-                  const list = issuesByBucket[b.key] ?? [];
-                  const score = b.score ?? 0;
-                  return (
-                    <AccordionItem key={b.key} value={b.key} className="overflow-hidden rounded-lg border border-border bg-secondary/30">
-                      <AccordionTrigger className="px-3 py-2.5 hover:no-underline">
-                        <div className="flex w-full items-center gap-3">
-                          <div className="flex h-8 w-8 items-center justify-center rounded-md bg-primary/10 text-primary"><Icon className="h-4 w-4" /></div>
-                          <div className="flex-1 text-left">
-                            <div className="text-sm font-medium">{BUCKET_LABEL[b.key]}</div>
-                            <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Weight {b.weight}%</div>
-                          </div>
-                          <div className={`text-lg font-semibold ${scoreColor(b.score)}`}>{b.score ?? "—"}</div>
-                        </div>
-                      </AccordionTrigger>
-                      <AccordionContent className="px-3 pb-3">
-                        <div className="mb-3 h-1.5 w-full overflow-hidden rounded-full bg-border">
-                          <div className={`h-full ${score >= 80 ? "bg-score-good" : score >= 60 ? "bg-score-warn" : "bg-score-bad"}`} style={{ width: `${score}%` }} />
-                        </div>
-                        {list.length === 0 ? (
-                          <div className="text-xs text-muted-foreground">No issues flagged in this bucket.</div>
-                        ) : (
-                          <ul className="space-y-2">
-                            {list.map((i) => (
-                              <li key={i.id} className="rounded-md border border-border bg-card/50 p-2.5">
-                                <div className="flex items-start justify-between gap-2">
-                                  <div className="text-sm font-medium">{i.title}</div>
-                                  <Badge variant="outline" className={`shrink-0 text-[10px] uppercase ${severityClass(i.severity)}`}>{i.severity}</Badge>
-                                </div>
-                                {i.timestamp_sec != null && (
-                                  <button onClick={() => seek(i.timestamp_sec ?? 0)} className="mt-1 text-[11px] text-primary hover:underline">@ {Math.round(i.timestamp_sec)}s</button>
-                                )}
-                                {i.description && <p className="mt-1.5 text-xs text-muted-foreground">{i.description}</p>}
-                                {i.suggested_fix && (
-                                  <p className="mt-1.5 rounded border-l-2 border-primary/50 bg-primary/5 p-1.5 text-[11px] text-foreground/90">
-                                    <span className="font-medium text-primary">Fix:</span> {i.suggested_fix}
-                                  </p>
-                                )}
-                              </li>
-                            ))}
-                          </ul>
-                        )}
-                      </AccordionContent>
-                    </AccordionItem>
-                  );
-                })}
+                {buckets.map((b) => (
+                  <BucketScoreCard
+                    key={b.key}
+                    bucketKey={b.key}
+                    icon={BUCKET_ICONS[b.key]}
+                    weight={b.weight}
+                    score={b.score ?? null}
+                    breakdown={(task.bucket_breakdown ?? null) as any}
+                    issues={issuesByBucket[b.key] ?? []}
+                    onSeek={seek}
+                  />
+                ))}
               </Accordion>
             </div>
 
