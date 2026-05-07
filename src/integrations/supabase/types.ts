@@ -80,6 +80,7 @@ export type Database = {
         Row: {
           bucket: string
           created_at: string
+          criterion: string | null
           description: string | null
           id: string
           severity: string
@@ -91,6 +92,7 @@ export type Database = {
         Insert: {
           bucket: string
           created_at?: string
+          criterion?: string | null
           description?: string | null
           id?: string
           severity: string
@@ -102,6 +104,7 @@ export type Database = {
         Update: {
           bucket?: string
           created_at?: string
+          criterion?: string | null
           description?: string | null
           id?: string
           severity?: string
@@ -129,6 +132,7 @@ export type Database = {
           approved_at: string | null
           approved_by: string | null
           brand_score: number | null
+          bucket_breakdown: Json
           contextual_score: number | null
           created_at: string
           critical_count: number | null
@@ -168,6 +172,7 @@ export type Database = {
           approved_at?: string | null
           approved_by?: string | null
           brand_score?: number | null
+          bucket_breakdown?: Json
           contextual_score?: number | null
           created_at?: string
           critical_count?: number | null
@@ -207,6 +212,7 @@ export type Database = {
           approved_at?: string | null
           approved_by?: string | null
           brand_score?: number | null
+          bucket_breakdown?: Json
           contextual_score?: number | null
           created_at?: string
           critical_count?: number | null
