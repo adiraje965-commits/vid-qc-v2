@@ -52,6 +52,7 @@ export interface QcIssue {
   id: string;
   task_id: string;
   bucket: "technical" | "brand" | "strategic" | "contextual";
+  criterion?: string | null;
   severity: Severity;
   timestamp_sec: number | null;
   title: string;
