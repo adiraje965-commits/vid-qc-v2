@@ -181,7 +181,6 @@ export function createLocalTaskForVideo(
   fallbackReason?: string,
 ) {
   const id = `local_${crypto.randomUUID()}`;
-  const transcriptDraft = buildTranscriptDraft(scraped, video);
   const analysis = buildAnalysis(id, scraped, video, complianceCheck, fallbackReason);
   const task: QcTask = {
     id,
@@ -203,16 +202,14 @@ export function createLocalTaskForVideo(
     medium_count: analysis.counts.medium,
     low_count: analysis.counts.low,
     key_frames: analysis.keyFrames,
-    transcript: transcriptDraft,
-    transcript_status: transcriptDraft.length ? "ready" : "unsupported_source",
+    transcript: [],
+    transcript_status: "pending",
     media_url: null,
     media_kind: null,
     analysis_summary: fallbackReason
       ? `Local fallback QC completed because the cloud service was unavailable: ${fallbackReason}`
       : "Local QC completed using detected video metadata and landing page context.",
-    error_message: transcriptDraft.length
-      ? null
-      : "Cloud transcription is unavailable. Paste a transcript or direct media source to complete speech-level QC.",
+    error_message: null,
     created_at: now(),
     updated_at: now(),
   };

@@ -9,7 +9,162 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.95.0";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const GOOGLE_AI_API_KEY = Deno.env.get("GOOGLE_AI_API_KEY")!;
+const FIRECRAWL_API_KEY = Deno.env.get("FIRECRAWL_API_KEY") ?? "";
 
+const BROWSER_HEADERS: Record<string, string> = {
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+  Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+  "Accept-Language": "en-US,en;q=0.9",
+};
+
+const MEDIA_EXT_RE = /\.(mp4|m4a|m4v|mp3|webm|wav|ogg|mov|m3u8)(\?|#|$)/i;
+const BOT_GATE_MARKERS = /access denied|reference #|just a moment|attention required|cf-browser-verification|cloudflare|akamai|forbidden/i;
+
+type ResolvedMedia =
+  | { kind: "mp4"; url: string }
+  | { kind: "hls"; url: string }
+  | { kind: "none"; reason: string };
+
+function classifyByExt(url: string): "mp4" | "hls" | null {
+  if (/\.(mp4|m4a|m4v|mp3|webm|wav|ogg|mov)(\?|#|$)/i.test(url)) return "mp4";
+  if (/\.m3u8(\?|#|$)/i.test(url)) return "hls";
+  return null;
+}
+function classifyByContentType(ct: string): "mp4" | "hls" | null {
+  const t = ct.toLowerCase();
+  if (t.includes("mpegurl") || t.includes("vnd.apple.mpegurl")) return "hls";
+  if (t.startsWith("video/") || t.startsWith("audio/")) return "mp4";
+  return null;
+}
+function absolutize(base: string, ref: string): string { try { return new URL(ref, base).toString(); } catch { return ref; } }
+function pageOrigin(url: string): string { try { return new URL(url).origin + "/"; } catch { return url; } }
+
+function collectMediaFromJson(value: unknown, out: string[]) {
+  if (!value) return;
+  if (typeof value === "string") {
+    if (/^https?:\/\//i.test(value) && MEDIA_EXT_RE.test(value)) out.push(value);
+    return;
+  }
+  if (Array.isArray(value)) { for (const v of value) collectMediaFromJson(v, out); return; }
+  if (typeof value === "object") for (const v of Object.values(value as Record<string, unknown>)) collectMediaFromJson(v, out);
+}
+function pickBest(cands: string[]): { kind: "mp4" | "hls"; url: string } | null {
+  const mp4 = cands.find((u) => classifyByExt(u) === "mp4");
+  if (mp4) return { kind: "mp4", url: mp4 };
+  const hls = cands.find((u) => classifyByExt(u) === "hls");
+  if (hls) return { kind: "hls", url: hls };
+  return null;
+}
+function findMediaInHtml(html: string, baseUrl: string): { kind: "mp4" | "hls"; url: string } | null {
+  const c: string[] = [];
+  for (const m of html.matchAll(/<meta[^>]+property=["']og:(?:video|audio)(?::secure_url|:url)?["'][^>]+content=["']([^"']+)["']/gi)) c.push(absolutize(baseUrl, m[1]));
+  for (const m of html.matchAll(/<(?:source|video|audio)[^>]+src=["']([^"']+)["']/gi)) c.push(absolutize(baseUrl, m[1]));
+  for (const m of html.matchAll(/\sdata-(?:src|hls|mp4|video-url|stream|playback-url|manifest)=["']([^"']+)["']/gi)) c.push(absolutize(baseUrl, m[1]));
+  for (const m of html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)) {
+    const s = m[1]; if (!s || s.length > 500_000) continue;
+    const trimmed = s.trim();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      try { const j = JSON.parse(trimmed); const cc: string[] = []; collectMediaFromJson(j, cc); for (const x of cc) c.push(absolutize(baseUrl, x)); } catch {}
+    }
+  }
+  for (const m of html.matchAll(/https?:\/\/[^\s"'<>\\]+\.(?:mp4|m4a|m4v|mp3|webm|wav|ogg|mov)(?:\?[^\s"'<>\\]*)?/gi)) c.push(m[0]);
+  for (const m of html.matchAll(/https?:\/\/[^\s"'<>\\]+\.m3u8(?:\?[^\s"'<>\\]*)?/gi)) c.push(m[0]);
+  const best = pickBest(c.filter((u) => /^https?:\/\//i.test(u)));
+  if (best) return best;
+  const iframe = html.match(/<iframe[^>]+src=["']([^"']+)["']/i);
+  if (iframe?.[1]) return { kind: "mp4", url: `__iframe__:${absolutize(baseUrl, iframe[1])}` };
+  return null;
+}
+function looksBlocked(status: number, body: string): boolean {
+  if ([401, 403, 451, 503].includes(status)) return true;
+  if (body.length < 4096 && BOT_GATE_MARKERS.test(body)) return true;
+  return false;
+}
+
+interface FetchedPage { finalUrl: string; html: string; contentType: string; status: number; }
+
+async function firecrawlScrape(url: string): Promise<FetchedPage | null> {
+  if (!FIRECRAWL_API_KEY) { console.log("firecrawl: skipped (no key)"); return null; }
+  try {
+    const res = await fetch("https://api.firecrawl.dev/v2/scrape", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${FIRECRAWL_API_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ url, formats: ["rawHtml", "links"], onlyMainContent: false, waitFor: 2500, location: { country: "IN", languages: ["en"] } }),
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) { console.log("firecrawl failed", res.status, data?.error); return null; }
+    const p = data?.data ?? data ?? {};
+    const html: string = p.rawHtml || p.html || "";
+    const links: string[] = Array.isArray(p.links) ? p.links : [];
+    const finalUrl: string = p.metadata?.sourceURL || p.metadata?.url || url;
+    if (!html && !links.length) return null;
+    // Append discovered links into html string region for findMediaInHtml regex sweep
+    const augmented = html + "\n" + links.join("\n");
+    return { finalUrl, html: augmented, contentType: "text/html", status: 200 };
+  } catch (e) { console.log("firecrawl exception", e instanceof Error ? e.message : String(e)); return null; }
+}
+
+async function fetchPageHtml(url: string): Promise<FetchedPage> {
+  let directRes: Response | null = null; let body = ""; let status = 0; let ct = "";
+  try {
+    directRes = await fetch(url, { headers: { ...BROWSER_HEADERS, Referer: pageOrigin(url) }, redirect: "follow" });
+    status = directRes.status; ct = directRes.headers.get("content-type") ?? "";
+    if (classifyByContentType(ct)) { await directRes.body?.cancel(); return { finalUrl: directRes.url, html: "", contentType: ct, status }; }
+    body = await directRes.text();
+  } catch (e) { console.log("direct fetch error", e instanceof Error ? e.message : String(e)); }
+  const blocked = !directRes || looksBlocked(status, body);
+  if (!blocked && directRes) return { finalUrl: directRes.url, html: body, contentType: ct, status };
+  console.log("direct blocked, trying firecrawl");
+  const fc = await firecrawlScrape(url);
+  if (fc) return fc;
+  if (directRes) return { finalUrl: directRes.url, html: body, contentType: ct, status };
+  throw new Error("Failed to fetch source and Firecrawl unavailable.");
+}
+
+async function pickHlsVariant(masterUrl: string): Promise<{ url: string; encrypted: boolean }> {
+  try {
+    const res = await fetch(masterUrl, { headers: { ...BROWSER_HEADERS, Referer: pageOrigin(masterUrl) } });
+    if (!res.ok) return { url: masterUrl, encrypted: false };
+    const text = await res.text();
+    const encrypted = /#EXT-X-KEY:[^\n]*METHOD=(?!NONE)[A-Z0-9-]+/i.test(text);
+    if (!/#EXT-X-STREAM-INF/i.test(text)) return { url: masterUrl, encrypted };
+    const lines = text.split(/\r?\n/);
+    let bestBw = Infinity, bestUri: string | null = null;
+    for (let i = 0; i < lines.length; i++) {
+      const bw = lines[i].match(/#EXT-X-STREAM-INF:[^\n]*BANDWIDTH=(\d+)/i);
+      if (bw) {
+        const uri = (lines[i + 1] || "").trim();
+        if (uri && !uri.startsWith("#") && Number(bw[1]) < bestBw) { bestBw = Number(bw[1]); bestUri = uri; }
+      }
+    }
+    return { url: bestUri ? absolutize(masterUrl, bestUri) : masterUrl, encrypted };
+  } catch { return { url: masterUrl, encrypted: false }; }
+}
+
+async function resolveMediaUrl(input: string, depth = 0): Promise<ResolvedMedia> {
+  if (depth > 1) return { kind: "none", reason: "Too many embed redirects." };
+  if (/youtube\.com|youtu\.be|vimeo\.com/i.test(input)) return { kind: "none", reason: "YouTube/Vimeo not supported here — use Live Capture." };
+  const byExt = classifyByExt(input);
+  if (byExt) return { kind: byExt, url: input };
+  let page: FetchedPage;
+  try { page = await fetchPageHtml(input); } catch (e) { return { kind: "none", reason: e instanceof Error ? e.message : String(e) }; }
+  if (!page.html && page.contentType) {
+    const k = classifyByContentType(page.contentType);
+    if (k) return { kind: k, url: page.finalUrl };
+  }
+  const found = findMediaInHtml(page.html, page.finalUrl);
+  if (!found) {
+    if (page.status >= 400) return { kind: "none", reason: `Source returned ${page.status} and no media URL found.` };
+    return { kind: "none", reason: "No direct media file found inside the page. If it's a DRM stream, use Live Capture." };
+  }
+  if (found.url.startsWith("__iframe__:")) return resolveMediaUrl(found.url.slice("__iframe__:".length), depth + 1);
+  if (found.kind === "hls") {
+    const { url, encrypted } = await pickHlsVariant(found.url);
+    if (encrypted) return { kind: "none", reason: "DRM/encrypted HLS stream — use Live Capture instead." };
+    return { kind: "hls", url };
+  }
+  return found;
+}
 const MODEL = "gemini-2.5-pro";
 const SEVERITY_WEIGHTS: Record<string, number> = { critical: 25, high: 15, medium: 8, low: 3 };
 
@@ -147,39 +302,27 @@ Deno.serve(async (req) => {
     const { videoUrl, pageContext, persona } = body;
     if (!taskId || !videoUrl) throw new Error("taskId and videoUrl required");
 
-    // 1) Resolve URL — if Bajaj kapsule embed (HTML iframe), scrape mp4 from it
-    let resolvedUrl = videoUrl;
-    if (/videos\.bajajfinserv\.in\/kapsule\//i.test(videoUrl)) {
-      console.log("Resolving Bajaj kapsule embed:", videoUrl);
-      const embedRes = await fetch(videoUrl, { redirect: "follow", headers: { "User-Agent": "Mozilla/5.0 LovableQC/1.0" } });
-      if (embedRes.ok) {
-        const html = await embedRes.text();
-        // Look for mp4/m3u8 inside the embed page
-        const m = html.match(/https?:\\?\/\\?\/[^"'\s<>)]+\.(?:mp4|m3u8)(?:\?[^"'\s<>)]*)?/i);
-        if (m) {
-          resolvedUrl = m[0].replace(/\\\//g, "/");
-          console.log("Resolved kapsule to:", resolvedUrl);
-        } else {
-          throw new Error("Bajaj kapsule embed did not expose a direct .mp4 URL. Use Live Capture for this video.");
-        }
-      }
+    // 1) Resolve to a direct media URL (handles Akamai-protected Bajaj kapsule embeds via Firecrawl-IN fallback)
+    console.log("Resolving media URL:", videoUrl);
+    const resolved = await resolveMediaUrl(videoUrl);
+    if (resolved.kind === "none") {
+      throw new Error(resolved.reason);
     }
+    if (resolved.kind === "hls") {
+      throw new Error("Resolved to HLS (.m3u8). Gemini Files API needs a direct .mp4/.webm — use Live Capture for HLS streams.");
+    }
+    console.log("Resolved to:", resolved.url);
 
     // 2) Download video bytes
-    console.log("Downloading video:", resolvedUrl);
-    const vRes = await fetch(resolvedUrl, { redirect: "follow", headers: { "User-Agent": "Mozilla/5.0 LovableQC/1.0", Accept: "video/*,*/*" } });
-    if (!vRes.ok) throw new Error(`Could not fetch video (${vRes.status}). Host may block server-side downloads — try Live Capture.`);
+    const vRes = await fetch(resolved.url, { redirect: "follow", headers: { ...BROWSER_HEADERS, Referer: pageOrigin(resolved.url), Accept: "video/*,*/*" } });
+    if (!vRes.ok) throw new Error(`Could not fetch resolved video (${vRes.status}). Host may block server-side downloads — try Live Capture.`);
     let ct = (vRes.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
-    const urlExt = resolvedUrl.split("?")[0].split("#")[0].toLowerCase();
-    const looksLikeVideoUrl = /\.(mp4|webm|mov|m4v|mkv)$/.test(urlExt);
-    if (!ct || ct === "application/octet-stream" || /^binary\//.test(ct)) {
-      ct = looksLikeVideoUrl ? (urlExt.endsWith(".webm") ? "video/webm" : "video/mp4") : ct || "video/mp4";
-    }
-    if (!/^video\//i.test(ct)) {
-      throw new Error(`URL returned ${ct || "unknown content-type"} (not a video). The link is probably a webpage/iframe player, not a direct file. Right-click the actual video and copy its direct .mp4/.webm URL, or use Live Capture for embedded players.`);
+    const urlExt = resolved.url.split("?")[0].split("#")[0].toLowerCase();
+    if (!ct || ct === "application/octet-stream" || !/^video\//i.test(ct)) {
+      ct = urlExt.endsWith(".webm") ? "video/webm" : "video/mp4";
     }
     const buf = new Uint8Array(await vRes.arrayBuffer());
-    console.log(`Downloaded ${(buf.byteLength / 1024 / 1024).toFixed(1)} MB`);
+    console.log(`Downloaded ${(buf.byteLength / 1024 / 1024).toFixed(1)} MB (${ct})`);
 
     // 2) Upload to Google AI Files API
     const file = await uploadToFilesApi(buf, ct, `qc-${taskId}`);

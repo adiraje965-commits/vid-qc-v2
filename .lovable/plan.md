@@ -1,85 +1,77 @@
-## Goal
 
-Browser-side video capture for **real** QC: actual frame analysis (visual + supers/OCR) + reliable transcript from gated sources like Bajaj. Gated-host 403 ka problem khatam, kyunki capture user ke browser mein hota hai jahan player already auth-ed hai.
+## Diagnosis
 
-## Architecture
+Two separate bugs are stacked on top of each other.
 
-```text
-TaskDetail page
-  └─ <VideoCapture> component (mounts when transcript_status != 'ready')
-       ├─ <video crossOrigin="anonymous" src={video_url}>  ← already plays in browser
-       ├─ MediaRecorder(audio track) → 30s WebM/Opus chunks
-       │     └─ POST /transcribe-chunk  (binary upload)
-       │           └─ ElevenLabs STT → append segments to qc_tasks.transcript
-       └─ Frame sampler: every 2s → canvas.toBlob('image/jpeg', 0.7) → queue
-             └─ POST /analyze-frames  (batch of 4 frames + transcript window)
-                   └─ Gemini 2.5 Flash Vision:
-                        • describe scene
-                        • OCR all on-screen text (supers, CTAs, disclaimers)
-                        • flag QC issues with real timestamps
-                   └─ insert into qc_issues + update key_frames
+### 1. Transcript box shows page text — by design, but wrong
+
+You are currently viewing a **local** task (`/task/local_...`). Local tasks never call any transcription service. Instead `src/lib/local-qc.ts › buildTranscriptDraft()` slices the scraped page markdown into 5-second fake segments and stores them in `task.transcript` with `transcript_status: "ready"` and the speaker label `"Page copy draft"`. The Transcript panel then renders that page copy as if it were the spoken transcript. So what you're seeing is exactly the page paragraphs, formatted as `[00:00] Page copy draft: …`.
+
+### 2. Run Deep Review fails for the Bajaj kapsule URL
+
+Edge logs for the last attempt:
+
+```
+Resolving Bajaj kapsule embed: https://videos.bajajfinserv.in/kapsule/gcc-…/nv3/embedded
+Downloading video: https://videos.bajajfinserv.in/kapsule/gcc-…/nv3/embedded
+deep-video-review error: Could not fetch video (403). Host may block server-side downloads — try Live Capture.
 ```
 
-End of capture → mark `transcript_status='ready'`, recompute `overall_score` with real signals.
+What happened:
 
-## Steps
+- `videos.bajajfinserv.in` sits behind **Akamai** and returns **HTTP 403 Access Denied** to non-Indian IPs (the Supabase edge runtime is outside India). I reproduced this from the sandbox: the kapsule embed returns Akamai's "Access Denied / Reference #18.…" HTML.
+- The `kapsuleUrlResolver` block in `supabase/functions/deep-video-review/index.ts` does a plain `fetch(videoUrl)`, gets the Access Denied HTML, finds no `.mp4` regex match → falls through to `Downloading video: <embed page>` → the next `fetch` returns 403 → the function 500s.
+- `transcribe-video/index.ts` already solved exactly this problem: it uses `fetchPageHtml()` which falls back to **Firecrawl with `location: { country: "IN" }`** when direct fetch is blocked, then walks JSON blobs / `<source>` / `og:video` / iframe srcs to find the real `.mp4` or `.m3u8`. `deep-video-review` does not reuse this code, so it has no chance of resolving Akamai-protected embeds.
 
-### 1. New edge function: `transcribe-chunk`
-- Accepts `multipart/form-data`: `taskId`, `startSec`, audio blob
-- Sends blob to ElevenLabs `speech-to-text` (already wired in `transcribe-video`, copy that helper)
-- Appends returned segments (offset by `startSec`) into `qc_tasks.transcript` JSONB
-- Returns `{ ok, appended }`
+A secondary UX issue: when `DeepReviewPanel.run()` is invoked on a local task it does `ensureCloudTask()` → `invoke("deep-video-review")` → navigate **only on success**. If the function 500s the user stays on the local task page with just a red toast and no breadcrumb to the cloud task that was just created.
 
-### 2. New edge function: `analyze-frames`
-- Accepts JSON: `taskId`, `frames: [{ tsSec, dataUrl }]`, `transcriptWindow: string`, `pageContext: string`
-- Calls Gemini 2.5 Flash via Lovable AI Gateway with multimodal `image_url` parts (data URLs work)
-- Tool-call schema returns `{ frame_observations: [{ts, scene, on_screen_text[], issues[]}], key_frames[] }`
-- Inserts new `qc_issues` rows, merges `key_frames` into `qc_tasks.key_frames`
+---
 
-### 3. New component: `src/components/VideoCapture.tsx`
-- Auto-starts when `task.video_url` set and `transcript_status` is `pending` or null
-- Mutes the visible player (separate hidden `<video>` for capture, autoplay+muted; or reuse existing — use hidden one to avoid disturbing UX)
-- Uses `video.captureStream()` → `MediaRecorder({ mimeType: 'audio/webm;codecs=opus' })`
-- On every `dataavailable` (timeslice 30000ms) → upload chunk
-- Frame loop: `requestVideoFrameCallback` throttled to 2s intervals → canvas snapshot → buffer 4 → POST batch
-- On `ended` event → finalize: mark task ready, trigger one final score recompute via existing `run-qc` (with `skipScrape: true`) OR a new lightweight `finalize-qc` endpoint that just recomputes counts + overall from the now-real issues. Use the lightweight finalize approach.
-- Shows a small badge: "Live QC capture in progress · Xs / Ys"
-- `crossOrigin="anonymous"` — if the video host blocks CORS for canvas (taints), fall back: skip frame analysis, keep audio capture only, show toast "Visual QC unavailable for this host (CORS); transcript still captured."
+## Fix plan
 
-### 4. New edge function: `finalize-qc`
-- Recompute counts from `qc_issues` rows for taskId, recompute bucket scores using existing penalty logic, set `transcript_status='ready'`, `status='completed'`.
+### A. `supabase/functions/deep-video-review/index.ts` — port the Firecrawl-aware resolver
 
-### 5. Tweak `run-qc`: stop firing `transcribe-video` automatically
-- Browser capture replaces it. Keep `transcribe-video` as manual fallback button (already exists in TaskDetail).
-- Keep server-side `transcribe-video` for cases where user closes the tab (best-effort) — but disable auto-invoke and let `VideoCapture` own the path.
+Replace the small `kapsuleUrlResolver` block + naive download with a resolver modeled on `transcribe-video/index.ts`:
 
-### 6. UI
-- Add `VideoCapture` mount in `TaskDetail.tsx` near the player
-- Status pill: "Capturing audio + frames" → "Analyzing" → "QC complete"
+1. Add `BROWSER_HEADERS` (real Chrome UA + `Accept-Language`) and a `FIRECRAWL_API_KEY` import.
+2. Add helpers: `classifyByExt`, `classifyByContentType`, `findMediaInHtml` (scans `og:video`, `<video>/<source>`, `data-*`, JSON-LD, generic `__NEXT_DATA__`/inline JSON, base64 strings, regex over the document, `<iframe src>` recursion).
+3. Add `firecrawlScrape(url)` that calls Firecrawl `v2/scrape` with `formats: ["rawHtml","links"]`, `waitFor: 2500`, `location: { country: "IN" }` so Akamai sees an Indian browser.
+4. Add `fetchPageHtml(url)` that does a direct fetch first, detects Akamai/Cloudflare bot walls (`looksBlocked`), and falls back to Firecrawl.
+5. Add `resolveMediaUrl(url)` — same shape as the transcribe version: extension shortcut → page fetch → media in HTML → iframe recursion (depth ≤ 1) → HLS variant picker (rejects DRM).
+6. Replace the current "if kapsule then fetch+regex" block with a single `const resolved = await resolveMediaUrl(videoUrl)`. If `resolved.kind === "none"`, throw a friendly error including `resolved.reason` (e.g. "DRM/encrypted HLS" → tell user to use Live Capture).
+7. Use `resolved.url` as the actual download URL; pass `resolved.kind` to set the correct mime when the response's `Content-Type` is missing.
 
-## Files
+This is the only change needed for the kapsule case to actually produce a downloadable `.mp4` / `.m3u8`.
 
-**New**
-- `supabase/functions/transcribe-chunk/index.ts`
-- `supabase/functions/analyze-frames/index.ts`
-- `supabase/functions/finalize-qc/index.ts`
-- `src/components/VideoCapture.tsx`
+### B. `src/lib/local-qc.ts` — stop faking the transcript
 
-**Edited**
-- `src/pages/TaskDetail.tsx` (mount VideoCapture)
-- `supabase/functions/run-qc/index.ts` (remove auto-transcribe-video invocation; capture-driven now)
+In `createLocalTaskForVideo`:
 
-No DB migration — `qc_tasks.transcript`, `key_frames`, `transcript_status` already exist; `qc_issues` schema unchanged.
+- Remove `buildTranscriptDraft(...)` from the task payload.
+- Set `transcript: []` and `transcript_status: "pending"` (so the Transcript panel shows the existing "Pending — run Deep Review or paste a transcript" empty state instead of misleading page copy).
+- Keep the `buildTranscriptDraft` function for now but don't call it (or delete it — it isn't referenced anywhere else).
 
-## Acceptance
+The Transcript panel already has good empty-state UX (`showPending`) and a "Paste transcript" path, so nothing else needs to change client-side.
 
-- Bajaj task: opens TaskDetail → capture starts → after ~30s real transcript segments appear; after ~60s real visual issues with accurate timestamps + super text appear; final scores reflect real findings.
-- Open-host MP4: same flow, no 403 anywhere.
-- CORS-tainted host: audio transcript still works; UI shows visual-QC-unavailable note.
-- No edge-function 403 spam in logs (since we no longer fetch the source server-side).
+### C. `src/components/DeepReviewPanel.tsx` — navigate immediately for local→cloud handoff
 
-## Limitations
+In `run()`:
 
-- Tab must stay open during capture (~video duration). Acceptable for a QC tool.
-- CORS-locked hosts → no canvas frames; audio still flows because `MediaRecorder` doesn't need CORS.
-- DRM (Widevine/FairPlay) → MediaRecorder can't capture protected streams; we detect and show clear message.
+1. `const cloudTaskId = await ensureCloudTask();`
+2. If `cloudTaskId !== taskId`, navigate to `/task/${cloudTaskId}` **before** awaiting the function call, so the user lands on the new cloud task and sees its live status (processing → completed/failed) instead of being stuck on the dead local task with only a toast.
+3. Keep the toast on completion/failure — TaskDetail already auto-refreshes via Supabase subscriptions / its existing fetch.
+
+No business-logic changes beyond the resolver port and the local-transcript flag flip.
+
+---
+
+## Out of scope / known limits
+
+- If the Bajaj kapsule is **DRM-protected HLS** (some kapsules are), even Firecrawl-via-IN can't decrypt it. The new resolver will surface a clear `"DRM/encrypted HLS stream — cannot transcribe."` error and the user should use **Live Capture** for that video. This is the same boundary `transcribe-video` already enforces.
+- No DB schema changes. No auth changes. Frontend transcript UI is unchanged — only what we put into `transcript` for local tasks changes.
+
+## Files to edit
+
+- `supabase/functions/deep-video-review/index.ts` — port resolver from `transcribe-video`.
+- `src/lib/local-qc.ts` — drop fake transcript draft.
+- `src/components/DeepReviewPanel.tsx` — navigate to cloud task before awaiting deep review.
