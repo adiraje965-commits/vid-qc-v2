@@ -7,6 +7,25 @@ import { Eye, Loader2 } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import { getLocalTask, isLocalId } from "@/lib/local-qc";
 import { classifyResolverError } from "@/components/DeepReviewErrorPanel";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+
+const BUSINESS_PERSONAS: { key: string; label: string; persona: string }[] = [
+  { key: "personal-loan", label: "Personal Loan", persona: "First-time Bajaj Finance customer evaluating a personal loan" },
+  { key: "two-wheeler-loan", label: "Two Wheeler Loan", persona: "Young salaried buyer comparing two-wheeler loan options on Bajaj Finance" },
+  { key: "new-car-loan", label: "New Car Loan", persona: "First-time car buyer evaluating a Bajaj Finance new car loan" },
+  { key: "used-car-loan", label: "Used Car Loan", persona: "Budget-conscious buyer evaluating a Bajaj Finance used car loan" },
+  { key: "consumer-durable-loan", label: "Consumer Durable Loan (Electronics)", persona: "Shopper considering No Cost EMI on electronics via Bajaj Finance Consumer Durable Loan" },
+  { key: "business-loan", label: "Business Loan", persona: "SME owner evaluating a Bajaj Finance unsecured business loan for working capital" },
+  { key: "professional-loan", label: "Professional Loan", persona: "Self-employed doctor/CA evaluating a Bajaj Finance professional loan" },
+  { key: "gold-loan", label: "Gold Loan", persona: "Customer needing quick liquidity evaluating a Bajaj Finance gold loan" },
+  { key: "home-loan", label: "Home Loan", persona: "Mid-career family evaluating a Bajaj Housing Finance home loan" },
+  { key: "loan-against-securities", label: "Loan Against Securities", persona: "Investor exploring a Bajaj Finance loan against shares/mutual funds without liquidating holdings" },
+  { key: "tractor-finance", label: "Tractor Finance", persona: "Farmer evaluating a Bajaj Finance tractor loan for farm productivity" },
+  { key: "insurance", label: "Insurance", persona: "Policy seeker comparing insurance plans on Bajaj Markets" },
+  { key: "demat", label: "DEMAT", persona: "New retail investor opening a Bajaj Broking DEMAT account" },
+  { key: "mutual-fund", label: "Mutual Fund", persona: "First-time SIP investor exploring mutual funds on Bajaj Finserv" },
+  { key: "fd", label: "Fixed Deposit (FD)", persona: "Risk-averse saver comparing Bajaj Finance Fixed Deposit rates" },
+];
 
 interface Props {
   taskId: string;
@@ -17,7 +36,8 @@ interface Props {
 export function DeepReviewPanel({ taskId, videoUrl, pageContext }: Props) {
   const navigate = useNavigate();
   const [running, setRunning] = useState(false);
-  const [persona, setPersona] = useState("First-time Bajaj Finance customer evaluating a personal loan");
+  const [business, setBusiness] = useState(BUSINESS_PERSONAS[0].key);
+  const [persona, setPersona] = useState(BUSINESS_PERSONAS[0].persona);
 
   const ensureCloudTask = async () => {
     if (!isLocalId(taskId)) return taskId;
@@ -79,12 +99,30 @@ export function DeepReviewPanel({ taskId, videoUrl, pageContext }: Props) {
       <p className="mb-2 text-xs text-muted-foreground">
         Server downloads the actual video, uploads it to Google AI's Files API, and lets Gemini 2.5 Pro watch it end-to-end (visual + audio + supers + pacing). Supports videos up to ~2GB / 1hr. Replaces previous QC findings with real ones.
       </p>
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="text-[11px] uppercase tracking-wider text-muted-foreground">Business</label>
+        <Select
+          value={business}
+          onValueChange={(v) => {
+            setBusiness(v);
+            const match = BUSINESS_PERSONAS.find((b) => b.key === v);
+            if (match) setPersona(match.persona);
+          }}
+        >
+          <SelectTrigger className="h-8 w-[220px] text-xs">
+            <SelectValue placeholder="Select business" />
+          </SelectTrigger>
+          <SelectContent className="max-h-72">
+            {BUSINESS_PERSONAS.map((b) => (
+              <SelectItem key={b.key} value={b.key} className="text-xs">{b.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         <label className="text-[11px] uppercase tracking-wider text-muted-foreground">Persona</label>
         <input
           value={persona}
           onChange={(e) => setPersona(e.target.value)}
-          className="flex-1 rounded-md border border-border bg-background px-2 py-1 text-xs"
+          className="min-w-[200px] flex-1 rounded-md border border-border bg-background px-2 py-1 text-xs"
           placeholder="e.g. First-time customer, skeptical buyer, mobile user…"
         />
       </div>
