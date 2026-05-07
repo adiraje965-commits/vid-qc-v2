@@ -270,6 +270,69 @@ async function resolveMediaUrl(input: string, depth = 0): Promise<ResolvedMedia>
 const MODEL = "gemini-2.5-pro";
 const SEVERITY_WEIGHTS: Record<string, number> = { critical: 25, high: 15, medium: 8, low: 3 };
 
+// === Rubric (mirror of src/lib/qc-rubric.ts — keep in sync) ===
+type BucketKey = "technical" | "brand" | "strategic" | "contextual";
+interface CriterionDef { key: string; label: string; weight: number; standard: string; guidance: string; }
+interface BucketDef { key: BucketKey; label: string; weight: number; criteria: CriterionDef[]; }
+
+const RUBRIC: BucketDef[] = [
+  { key: "technical", label: "Technical", weight: 0.25, criteria: [
+    { key: "audio_loudness", label: "Audio loudness & dynamics", weight: 0.20, standard: "EBU R128", guidance: "Integrated loudness near -14 LUFS (web) / -23 LUFS (broadcast); true-peak <= -1 dBTP; no clipping." },
+    { key: "exposure_color", label: "Exposure, WB & color", weight: 0.18, standard: "ITU-R BT.709", guidance: "Rec.709 gamut, no crushed blacks/blown highlights, consistent white balance." },
+    { key: "framing_stability", label: "Framing & camera stability", weight: 0.15, standard: "Cinematography craft", guidance: "Rule of thirds, headroom, safe-area, no unintended shake." },
+    { key: "edit_craft", label: "Edit craft", weight: 0.17, standard: "Editing craft", guidance: "Cut rhythm, no jump cuts, clean L/J cuts." },
+    { key: "encoding_delivery", label: "Encoding & delivery", weight: 0.15, standard: "IAB/MRC", guidance: "Adequate resolution & bitrate, correct aspect, no macroblocking." },
+    { key: "sound_design", label: "Sound design", weight: 0.15, standard: "EBU R128", guidance: "Music bed -18 to -22 LU below VO; SFX present where needed." },
+  ]},
+  { key: "brand", label: "Brand", weight: 0.30, criteria: [
+    { key: "logo_presence", label: "Logo presence & timing", weight: 0.20, standard: "Google ABCD — Branding", guidance: "Logo in first 5s, end-frame lockup, correct clear-space." },
+    { key: "color_typography", label: "Color & typography fidelity", weight: 0.18, standard: "Bajaj brand book", guidance: "Bajaj blue/red palette, approved typefaces." },
+    { key: "brand_mention_cadence", label: "Brand mention cadence", weight: 0.15, standard: "Google ABCD — Branding", guidance: "Verbal + on-screen mentions distributed, not just at end." },
+    { key: "tone_of_voice", label: "Tone of voice", weight: 0.17, standard: "Bajaj brand book", guidance: "Confident, simple, customer-first; no jargon or aggressive claims." },
+    { key: "visual_identity", label: "Visual identity system", weight: 0.15, standard: "Bajaj brand book", guidance: "Iconography, motion language, supers style match brand kit." },
+    { key: "talent_wardrobe", label: "Talent & wardrobe", weight: 0.15, standard: "Casting standards", guidance: "Talent represents target customer; no conflicting brand wear." },
+  ]},
+  { key: "strategic", label: "Strategic", weight: 0.20, criteria: [
+    { key: "hook_strength", label: "Hook strength (first 3s)", weight: 0.22, standard: "Google ABCD — Attention", guidance: "Strong visual + audio hook; problem/promise framed in 3s." },
+    { key: "narrative_pacing", label: "Narrative arc & pacing", weight: 0.18, standard: "Storytelling craft", guidance: "Setup→benefit→proof→CTA; no dead air >2s." },
+    { key: "single_minded_message", label: "Single-minded message", weight: 0.15, standard: "Google ABCD — Connection", guidance: "One core proposition, not a feature dump." },
+    { key: "emotional_connection", label: "Emotional connection", weight: 0.15, standard: "Google ABCD — Connection", guidance: "Relatable scenario, faces, human moments." },
+    { key: "cta_clarity", label: "CTA clarity & placement", weight: 0.18, standard: "Google ABCD — Direction", guidance: "Verbal + on-screen CTA + URL/app name; in last 5s and ideally mid-roll." },
+    { key: "platform_fit", label: "Platform-fit", weight: 0.12, standard: "Platform best practices", guidance: "Duration, aspect, captions-on-by-default match channel." },
+  ]},
+  { key: "contextual", label: "Contextual", weight: 0.25, criteria: [
+    { key: "topic_match", label: "Page–video topic match", weight: 0.18, standard: "Landing-page relevance", guidance: "Video subject matches landing page product." },
+    { key: "persona_relevance", label: "Persona relevance", weight: 0.15, standard: "Customer-journey fit", guidance: "Addresses selected persona's intent and objections." },
+    { key: "mandatory_disclaimers", label: "Mandatory disclaimers", weight: 0.22, standard: "RBI / SEBI / IRDAI / ASCI", guidance: "APR/representative example (loans), MF risk warning, IRDAI insurance solicitation line, T&C, MITC reference — present, legible >=4s." },
+    { key: "truthful_claims", label: "Truthful claims & substantiation", weight: 0.17, standard: "ASCI Code", guidance: "No 'lowest', 'instant', 'guaranteed' without substantiation." },
+    { key: "accessibility", label: "Accessibility", weight: 0.16, standard: "WCAG 2.2", guidance: "Captions accurate; supers contrast >=4.5:1; no >3 Hz flashing." },
+    { key: "audience_fit", label: "Risk & target-audience fit", weight: 0.12, standard: "RBI Fair Practices Code", guidance: "No misleading affordability cues; responsible-lending tone." },
+  ]},
+];
+
+function buildCriteriaSchema(b: BucketDef) {
+  const props: Record<string, any> = {};
+  for (const c of b.criteria) {
+    props[c.key] = {
+      type: "object",
+      properties: {
+        score: { type: "integer", minimum: 0, maximum: 100 },
+        rationale: { type: "string" },
+      },
+      required: ["score", "rationale"],
+    };
+  }
+  return { type: "object", properties: props, required: b.criteria.map((c) => c.key) };
+}
+
+const BUCKET_BREAKDOWN_SCHEMA = {
+  type: "object",
+  properties: Object.fromEntries(RUBRIC.map((b) => [b.key, buildCriteriaSchema(b)])),
+  required: RUBRIC.map((b) => b.key),
+};
+
+const ALL_CRITERION_KEYS: string[] = RUBRIC.flatMap((b) => b.criteria.map((c) => `${b.key}.${c.key}`));
+
 const QC_SCHEMA = {
   type: "object",
   properties: {
@@ -277,16 +340,7 @@ const QC_SCHEMA = {
     what_a_user_feels: { type: "string" },
     customer_intent: { type: "string" },
     topic_match_score: { type: "integer" },
-    bucket_scores: {
-      type: "object",
-      properties: {
-        technical: { type: "integer" },
-        brand: { type: "integer" },
-        strategic: { type: "integer" },
-        contextual: { type: "integer" },
-      },
-      required: ["technical", "brand", "strategic", "contextual"],
-    },
+    bucket_breakdown: BUCKET_BREAKDOWN_SCHEMA,
     transcript: {
       type: "array",
       items: {
@@ -306,13 +360,14 @@ const QC_SCHEMA = {
         type: "object",
         properties: {
           bucket: { type: "string", enum: ["technical", "brand", "strategic", "contextual"] },
+          criterion: { type: "string", enum: ALL_CRITERION_KEYS },
           severity: { type: "string", enum: ["critical", "high", "medium", "low"] },
           timestamp_sec: { type: "number" },
           title: { type: "string" },
           description: { type: "string" },
           suggested_fix: { type: "string" },
         },
-        required: ["bucket", "severity", "timestamp_sec", "title", "description", "suggested_fix"],
+        required: ["bucket", "criterion", "severity", "timestamp_sec", "title", "description", "suggested_fix"],
       },
     },
     key_frames: {
@@ -329,21 +384,40 @@ const QC_SCHEMA = {
       },
     },
   },
-  required: ["analysis_summary", "what_a_user_feels", "customer_intent", "topic_match_score", "bucket_scores", "transcript", "issues", "key_frames"],
+  required: ["analysis_summary", "what_a_user_feels", "customer_intent", "topic_match_score", "bucket_breakdown", "transcript", "issues", "key_frames"],
 };
 
-function computeOverall(b: any, issues: any[]) {
+function computeBucketFromCriteria(b: BucketDef, criteria: Record<string, { score: number }>): number {
+  let sum = 0, wsum = 0;
+  for (const c of b.criteria) {
+    const v = criteria?.[c.key];
+    if (v && typeof v.score === "number") { sum += v.score * c.weight; wsum += c.weight; }
+  }
+  return wsum > 0 ? sum / wsum : 0;
+}
+
+function computeOverall(breakdown: any, issues: any[]) {
   const penalty: Record<string, number> = { technical: 0, brand: 0, strategic: 0, contextual: 0 };
   for (const i of issues) penalty[i.bucket] = (penalty[i.bucket] ?? 0) + (SEVERITY_WEIGHTS[i.severity] ?? 0);
-  const adj = {
-    technical: Math.max(0, b.technical - Math.min(40, penalty.technical * 0.4)),
-    brand: Math.max(0, b.brand - Math.min(40, penalty.brand * 0.4)),
-    strategic: Math.max(0, b.strategic - Math.min(40, penalty.strategic * 0.4)),
-    contextual: Math.max(0, b.contextual - Math.min(40, penalty.contextual * 0.4)),
+  const raw: Record<BucketKey, number> = { technical: 0, brand: 0, strategic: 0, contextual: 0 };
+  for (const b of RUBRIC) raw[b.key] = computeBucketFromCriteria(b, breakdown?.[b.key]?.criteria ?? {});
+  const adj: Record<BucketKey, number> = {
+    technical: Math.max(0, raw.technical - Math.min(40, penalty.technical * 0.4)),
+    brand: Math.max(0, raw.brand - Math.min(40, penalty.brand * 0.4)),
+    strategic: Math.max(0, raw.strategic - Math.min(40, penalty.strategic * 0.4)),
+    contextual: Math.max(0, raw.contextual - Math.min(40, penalty.contextual * 0.4)),
   };
   const overall = Math.round(adj.technical * 0.25 + adj.brand * 0.30 + adj.strategic * 0.20 + adj.contextual * 0.25);
   return { adjusted: adj, overall };
 }
+
+function buildRubricPromptBlock(): string {
+  return RUBRIC.map((b) => {
+    const lines = b.criteria.map((c) => `    - ${b.key}.${c.key} — ${c.label} [${c.standard}] — ${c.guidance}`).join("\n");
+    return `  ${b.label.toUpperCase()} (weight ${(b.weight * 100).toFixed(0)}%):\n${lines}`;
+  }).join("\n");
+}
+
 
 // Upload bytes to Google AI Files API (resumable protocol)
 async function uploadToFilesApi(bytes: Uint8Array, mime: string, displayName: string) {
@@ -443,16 +517,21 @@ Deno.serve(async (req) => {
     const systemPrompt = `You are a senior Video QC reviewer for Bajaj Finance, a major Indian financial services brand. You can SEE and HEAR the attached video. Behave like a real human reviewer:
 
 - Watch end-to-end FRAME-BY-FRAME. Note REAL timestamps (in seconds) for everything you flag.
-- Produce a FULL TIMESTAMPED TRANSCRIPT of all spoken voiceover/dialogue (Hindi/English/Hinglish ok — keep the original language). Break into short segments of 3-8 seconds. Include speaker if obvious.
+- Produce a FULL TIMESTAMPED TRANSCRIPT of all spoken voiceover/dialogue (Hindi/English/Hinglish ok — keep the original language). Break into 3-8 second segments. Include speaker if obvious.
 - OCR every super, lower-third, CTA, price, EMI, T&C, RBI line, disclaimer.
 - Listen to the voiceover. Flag voice/visual mismatches, unclear pronunciation, missing CTA, missing legal copy.
-- Judge pacing: hook in first 3 seconds? Does the message land? Does the CTA arrive too late?
-- Brand: Bajaj Finance logo present? Brand colors (deep blue / white)? Persona consistent?
 - Be strict. Do NOT invent issues. Only flag what you actually see or hear.
 
-Score buckets 0-100: Technical, Brand, Strategic, Contextual. Return 4-12 grounded issues with REAL timestamps and 4-8 key_frames. Transcript MUST cover the entire video.`;
+You MUST score every sub-criterion in the rubric below from 0 to 100 and write a 1-2 sentence rationale that EXPLICITLY cites the named standard (e.g. "EBU R128: integrated loudness measured at -9 LUFS, ~5 LU above the -14 LUFS web target").
 
-    const userText = `${persona ? `PERSONA: ${persona}\n\n` : ""}LANDING PAGE CONTEXT:\n${(pageContext ?? "").slice(0, 4000)}\n\nWatch the attached video and return your honest QC review as JSON.`;
+RUBRIC (score every item):
+${buildRubricPromptBlock()}
+
+Each issue you flag MUST set "criterion" to one of: ${ALL_CRITERION_KEYS.join(", ")}.
+
+Return 4-12 grounded issues with REAL timestamps and 4-8 key_frames. Transcript MUST cover the entire video.`;
+
+    const userText = `${persona ? `PERSONA: ${persona}\n\n` : ""}LANDING PAGE CONTEXT:\n${(pageContext ?? "").slice(0, 4000)}\n\nWatch the attached video and return your honest QC review as JSON conforming to the schema.`;
 
     const genRes = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GOOGLE_AI_API_KEY}`,
@@ -491,12 +570,34 @@ Score buckets 0-100: Technical, Brand, Strategic, Contextual. Return 4-12 ground
     // 5) Cleanup uploaded file (best-effort)
     fetch(`https://generativelanguage.googleapis.com/v1beta/${file.name}?key=${GOOGLE_AI_API_KEY}`, { method: "DELETE" }).catch(() => {});
 
-    // 6) Persist
+    // 6) Persist — normalise breakdown + issue rows
+    const breakdownRaw = parsed.bucket_breakdown ?? {};
+    const breakdown: any = {};
+    for (const b of RUBRIC) {
+      const criteria = breakdownRaw?.[b.key]?.criteria ?? breakdownRaw?.[b.key] ?? {};
+      breakdown[b.key] = { overall: Math.round(computeBucketFromCriteria(b, criteria)), criteria };
+    }
+
     await supabase.from("qc_issues").delete().eq("task_id", taskId);
     if (parsed.issues?.length) {
-      await supabase.from("qc_issues").insert(parsed.issues.map((i: any) => ({ ...i, task_id: taskId })));
+      const rows = parsed.issues.map((i: any) => {
+        // criterion in prompt is namespaced "bucket.key" — store the leaf key only
+        let criterion: string | null = i.criterion ?? null;
+        if (criterion && criterion.includes(".")) criterion = criterion.split(".").slice(1).join(".");
+        return {
+          task_id: taskId,
+          bucket: i.bucket,
+          criterion,
+          severity: i.severity,
+          timestamp_sec: i.timestamp_sec,
+          title: i.title,
+          description: i.description,
+          suggested_fix: i.suggested_fix,
+        };
+      });
+      await supabase.from("qc_issues").insert(rows);
     }
-    const { adjusted, overall } = computeOverall(parsed.bucket_scores, parsed.issues || []);
+    const { adjusted, overall } = computeOverall(breakdown, parsed.issues || []);
     const counts = { critical: 0, high: 0, medium: 0, low: 0 };
     for (const i of parsed.issues || []) (counts as any)[i.severity]++;
 
@@ -505,6 +606,7 @@ Score buckets 0-100: Technical, Brand, Strategic, Contextual. Return 4-12 ground
       customer_intent: parsed.customer_intent,
       topic_match_score: parsed.topic_match_score,
       analysis_summary: `${parsed.analysis_summary}\n\nWhat a user feels: ${parsed.what_a_user_feels}`,
+      bucket_breakdown: breakdown,
       technical_score: Math.round(adjusted.technical),
       brand_score: Math.round(adjusted.brand),
       strategic_score: Math.round(adjusted.strategic),
