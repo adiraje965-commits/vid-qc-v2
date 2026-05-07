@@ -301,39 +301,27 @@ Deno.serve(async (req) => {
     const { videoUrl, pageContext, persona } = body;
     if (!taskId || !videoUrl) throw new Error("taskId and videoUrl required");
 
-    // 1) Resolve URL — if Bajaj kapsule embed (HTML iframe), scrape mp4 from it
-    let resolvedUrl = videoUrl;
-    if (/videos\.bajajfinserv\.in\/kapsule\//i.test(videoUrl)) {
-      console.log("Resolving Bajaj kapsule embed:", videoUrl);
-      const embedRes = await fetch(videoUrl, { redirect: "follow", headers: { "User-Agent": "Mozilla/5.0 LovableQC/1.0" } });
-      if (embedRes.ok) {
-        const html = await embedRes.text();
-        // Look for mp4/m3u8 inside the embed page
-        const m = html.match(/https?:\\?\/\\?\/[^"'\s<>)]+\.(?:mp4|m3u8)(?:\?[^"'\s<>)]*)?/i);
-        if (m) {
-          resolvedUrl = m[0].replace(/\\\//g, "/");
-          console.log("Resolved kapsule to:", resolvedUrl);
-        } else {
-          throw new Error("Bajaj kapsule embed did not expose a direct .mp4 URL. Use Live Capture for this video.");
-        }
-      }
+    // 1) Resolve to a direct media URL (handles Akamai-protected Bajaj kapsule embeds via Firecrawl-IN fallback)
+    console.log("Resolving media URL:", videoUrl);
+    const resolved = await resolveMediaUrl(videoUrl);
+    if (resolved.kind === "none") {
+      throw new Error(resolved.reason);
     }
+    if (resolved.kind === "hls") {
+      throw new Error("Resolved to HLS (.m3u8). Gemini Files API needs a direct .mp4/.webm — use Live Capture for HLS streams.");
+    }
+    console.log("Resolved to:", resolved.url);
 
     // 2) Download video bytes
-    console.log("Downloading video:", resolvedUrl);
-    const vRes = await fetch(resolvedUrl, { redirect: "follow", headers: { "User-Agent": "Mozilla/5.0 LovableQC/1.0", Accept: "video/*,*/*" } });
-    if (!vRes.ok) throw new Error(`Could not fetch video (${vRes.status}). Host may block server-side downloads — try Live Capture.`);
+    const vRes = await fetch(resolved.url, { redirect: "follow", headers: { ...BROWSER_HEADERS, Referer: pageOrigin(resolved.url), Accept: "video/*,*/*" } });
+    if (!vRes.ok) throw new Error(`Could not fetch resolved video (${vRes.status}). Host may block server-side downloads — try Live Capture.`);
     let ct = (vRes.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
-    const urlExt = resolvedUrl.split("?")[0].split("#")[0].toLowerCase();
-    const looksLikeVideoUrl = /\.(mp4|webm|mov|m4v|mkv)$/.test(urlExt);
-    if (!ct || ct === "application/octet-stream" || /^binary\//.test(ct)) {
-      ct = looksLikeVideoUrl ? (urlExt.endsWith(".webm") ? "video/webm" : "video/mp4") : ct || "video/mp4";
-    }
-    if (!/^video\//i.test(ct)) {
-      throw new Error(`URL returned ${ct || "unknown content-type"} (not a video). The link is probably a webpage/iframe player, not a direct file. Right-click the actual video and copy its direct .mp4/.webm URL, or use Live Capture for embedded players.`);
+    const urlExt = resolved.url.split("?")[0].split("#")[0].toLowerCase();
+    if (!ct || ct === "application/octet-stream" || !/^video\//i.test(ct)) {
+      ct = urlExt.endsWith(".webm") ? "video/webm" : "video/mp4";
     }
     const buf = new Uint8Array(await vRes.arrayBuffer());
-    console.log(`Downloaded ${(buf.byteLength / 1024 / 1024).toFixed(1)} MB`);
+    console.log(`Downloaded ${(buf.byteLength / 1024 / 1024).toFixed(1)} MB (${ct})`);
 
     // 2) Upload to Google AI Files API
     const file = await uploadToFilesApi(buf, ct, `qc-${taskId}`);
