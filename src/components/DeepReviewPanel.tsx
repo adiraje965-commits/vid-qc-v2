@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Eye, Loader2 } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import { getLocalTask, isLocalId } from "@/lib/local-qc";
+import { classifyResolverError } from "@/components/DeepReviewErrorPanel";
 
 interface Props {
   taskId: string;
