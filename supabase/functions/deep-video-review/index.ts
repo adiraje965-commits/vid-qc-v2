@@ -179,6 +179,34 @@ async function pickHlsVariant(masterUrl: string): Promise<{ url: string; encrypt
   } catch { return { url: masterUrl, encrypted: false }; }
 }
 
+async function downloadHlsBytes(hlsUrl: string): Promise<Uint8Array> {
+  const manifestRes = await fetch(hlsUrl, { headers: { ...BROWSER_HEADERS, Referer: pageOrigin(hlsUrl) } });
+  if (!manifestRes.ok) throw new Error(`Failed to download HLS manifest (${manifestRes.status}). The signed CDN URL may have expired — retry Deep Review or use Live Capture.`);
+  const manifest = await manifestRes.text();
+  if (/#EXT-X-KEY:[^\n]*METHOD=(?!NONE)[A-Z0-9-]+/i.test(manifest)) throw new Error("DRM/encrypted HLS stream — use Live Capture instead.");
+  const refs = manifest.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !line.startsWith("#"));
+  if (!refs.length) throw new Error("HLS manifest contains no playable media segments — use Live Capture.");
+  const nested = refs.find((ref) => /\.m3u8(\?|#|$)/i.test(ref));
+  if (nested) return downloadHlsBytes(absolutize(hlsUrl, nested));
+
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  const maxBytes = 950 * 1024 * 1024;
+  for (const ref of refs) {
+    const segmentUrl = absolutize(hlsUrl, ref);
+    const res = await fetch(segmentUrl, { headers: { ...BROWSER_HEADERS, Referer: pageOrigin(hlsUrl) } });
+    if (!res.ok) throw new Error(`Failed to download HLS segment (${res.status}). The host may block server-side downloads — use Live Capture.`);
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    total += bytes.byteLength;
+    if (total > maxBytes) throw new Error("HLS stream is too large for Deep Review download — use Live Capture for this long video.");
+    chunks.push(bytes);
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) { merged.set(chunk, offset); offset += chunk.byteLength; }
+  return merged;
+}
+
 async function resolveMediaUrl(input: string, depth = 0): Promise<ResolvedMedia> {
   if (depth > 2) return { kind: "none", reason: "Too many embed redirects." };
   if (/youtube\.com|youtu\.be|vimeo\.com/i.test(input)) return { kind: "none", reason: "YouTube/Vimeo not supported here — use Live Capture." };
