@@ -517,16 +517,21 @@ Deno.serve(async (req) => {
     const systemPrompt = `You are a senior Video QC reviewer for Bajaj Finance, a major Indian financial services brand. You can SEE and HEAR the attached video. Behave like a real human reviewer:
 
 - Watch end-to-end FRAME-BY-FRAME. Note REAL timestamps (in seconds) for everything you flag.
-- Produce a FULL TIMESTAMPED TRANSCRIPT of all spoken voiceover/dialogue (Hindi/English/Hinglish ok — keep the original language). Break into short segments of 3-8 seconds. Include speaker if obvious.
+- Produce a FULL TIMESTAMPED TRANSCRIPT of all spoken voiceover/dialogue (Hindi/English/Hinglish ok — keep the original language). Break into 3-8 second segments. Include speaker if obvious.
 - OCR every super, lower-third, CTA, price, EMI, T&C, RBI line, disclaimer.
 - Listen to the voiceover. Flag voice/visual mismatches, unclear pronunciation, missing CTA, missing legal copy.
-- Judge pacing: hook in first 3 seconds? Does the message land? Does the CTA arrive too late?
-- Brand: Bajaj Finance logo present? Brand colors (deep blue / white)? Persona consistent?
 - Be strict. Do NOT invent issues. Only flag what you actually see or hear.
 
-Score buckets 0-100: Technical, Brand, Strategic, Contextual. Return 4-12 grounded issues with REAL timestamps and 4-8 key_frames. Transcript MUST cover the entire video.`;
+You MUST score every sub-criterion in the rubric below from 0 to 100 and write a 1-2 sentence rationale that EXPLICITLY cites the named standard (e.g. "EBU R128: integrated loudness measured at -9 LUFS, ~5 LU above the -14 LUFS web target").
 
-    const userText = `${persona ? `PERSONA: ${persona}\n\n` : ""}LANDING PAGE CONTEXT:\n${(pageContext ?? "").slice(0, 4000)}\n\nWatch the attached video and return your honest QC review as JSON.`;
+RUBRIC (score every item):
+${buildRubricPromptBlock()}
+
+Each issue you flag MUST set "criterion" to one of: ${ALL_CRITERION_KEYS.join(", ")}.
+
+Return 4-12 grounded issues with REAL timestamps and 4-8 key_frames. Transcript MUST cover the entire video.`;
+
+    const userText = `${persona ? `PERSONA: ${persona}\n\n` : ""}LANDING PAGE CONTEXT:\n${(pageContext ?? "").slice(0, 4000)}\n\nWatch the attached video and return your honest QC review as JSON conforming to the schema.`;
 
     const genRes = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GOOGLE_AI_API_KEY}`,
@@ -565,12 +570,34 @@ Score buckets 0-100: Technical, Brand, Strategic, Contextual. Return 4-12 ground
     // 5) Cleanup uploaded file (best-effort)
     fetch(`https://generativelanguage.googleapis.com/v1beta/${file.name}?key=${GOOGLE_AI_API_KEY}`, { method: "DELETE" }).catch(() => {});
 
-    // 6) Persist
+    // 6) Persist — normalise breakdown + issue rows
+    const breakdownRaw = parsed.bucket_breakdown ?? {};
+    const breakdown: any = {};
+    for (const b of RUBRIC) {
+      const criteria = breakdownRaw?.[b.key]?.criteria ?? breakdownRaw?.[b.key] ?? {};
+      breakdown[b.key] = { overall: Math.round(computeBucketFromCriteria(b, criteria)), criteria };
+    }
+
     await supabase.from("qc_issues").delete().eq("task_id", taskId);
     if (parsed.issues?.length) {
-      await supabase.from("qc_issues").insert(parsed.issues.map((i: any) => ({ ...i, task_id: taskId })));
+      const rows = parsed.issues.map((i: any) => {
+        // criterion in prompt is namespaced "bucket.key" — store the leaf key only
+        let criterion: string | null = i.criterion ?? null;
+        if (criterion && criterion.includes(".")) criterion = criterion.split(".").slice(1).join(".");
+        return {
+          task_id: taskId,
+          bucket: i.bucket,
+          criterion,
+          severity: i.severity,
+          timestamp_sec: i.timestamp_sec,
+          title: i.title,
+          description: i.description,
+          suggested_fix: i.suggested_fix,
+        };
+      });
+      await supabase.from("qc_issues").insert(rows);
     }
-    const { adjusted, overall } = computeOverall(parsed.bucket_scores, parsed.issues || []);
+    const { adjusted, overall } = computeOverall(breakdown, parsed.issues || []);
     const counts = { critical: 0, high: 0, medium: 0, low: 0 };
     for (const i of parsed.issues || []) (counts as any)[i.severity]++;
 
@@ -579,6 +606,7 @@ Score buckets 0-100: Technical, Brand, Strategic, Contextual. Return 4-12 ground
       customer_intent: parsed.customer_intent,
       topic_match_score: parsed.topic_match_score,
       analysis_summary: `${parsed.analysis_summary}\n\nWhat a user feels: ${parsed.what_a_user_feels}`,
+      bucket_breakdown: breakdown,
       technical_score: Math.round(adjusted.technical),
       brand_score: Math.round(adjusted.brand),
       strategic_score: Math.round(adjusted.strategic),
