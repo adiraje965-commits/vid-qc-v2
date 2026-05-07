@@ -30,6 +30,19 @@ const QC_SCHEMA = {
       },
       required: ["technical", "brand", "strategic", "contextual"],
     },
+    transcript: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          start: { type: "number" },
+          end: { type: "number" },
+          text: { type: "string" },
+          speaker: { type: "string" },
+        },
+        required: ["start", "end", "text"],
+      },
+    },
     issues: {
       type: "array",
       items: {
