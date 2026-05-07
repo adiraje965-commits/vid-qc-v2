@@ -207,11 +207,38 @@ async function downloadHlsBytes(hlsUrl: string): Promise<Uint8Array> {
   return merged;
 }
 
+const KPOINT_ID_RE = /videos\.bajajfinserv\.in\/(?:kapsule|web\/videos)\/(gcc-[a-f0-9-]+)/i;
+async function tryKpointDirect(url: string): Promise<{ kind: "hls"; url: string } | null> {
+  const m = url.match(KPOINT_ID_RE);
+  if (!m) return null;
+  const id = m[1];
+  const base = `https://media-mp.kpoint.com/data.ap-south-1.kpoint/bajaj-finance-marketing.kpoint.com/videos.bajajfinserv.in/kapsule/${id}/v32/view/html5`;
+  const candidates = [
+    `${base}/hls-1080p/playlist.m3u8`,
+    `${base}/hls-720p/playlist.m3u8`,
+    `${base}/hls-480p/playlist.m3u8`,
+    `${base}/master.m3u8`,
+    `${base}/playlist.m3u8`,
+  ];
+  for (const c of candidates) {
+    try {
+      const r = await fetch(c, { headers: { ...BROWSER_HEADERS, Referer: "https://videos.bajajfinserv.in/" } });
+      if (!r.ok) { await r.body?.cancel(); continue; }
+      const text = await r.text();
+      if (text.startsWith("#EXTM3U")) { logResolve("kpoint-direct ok", c); return { kind: "hls", url: c }; }
+    } catch {}
+  }
+  logResolve("kpoint-direct: no candidate matched", id);
+  return null;
+}
+
 async function resolveMediaUrl(input: string, depth = 0): Promise<ResolvedMedia> {
   if (depth > 2) return { kind: "none", reason: "Too many embed redirects." };
   if (/youtube\.com|youtu\.be|vimeo\.com/i.test(input)) return { kind: "none", reason: "YouTube/Vimeo not supported here — use Live Capture." };
   const byExt = classifyByExt(input);
   if (byExt) { logResolve("by-ext", { kind: byExt, url: input }); return { kind: byExt, url: input }; }
+  const kp = await tryKpointDirect(input);
+  if (kp) return kp;
   let page: FetchedPage;
   try { page = await fetchPageHtml(input); } catch (e) { return { kind: "none", reason: e instanceof Error ? e.message : String(e) }; }
   if (!page.html && page.contentType) {
