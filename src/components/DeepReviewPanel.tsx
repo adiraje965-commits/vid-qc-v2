@@ -57,7 +57,8 @@ export function DeepReviewPanel({ taskId, videoUrl, pageContext }: Props) {
       toast({ title: "Deep review complete", description: `${(data as any)?.issues ?? 0} real issues · score ${(data as any)?.overall ?? "—"}` });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      toast({ title: "Deep review failed", description: msg, variant: "destructive" });
+      const c = classifyResolverError(msg);
+      toast({ title: `Deep review failed · ${c.label}`, description: msg, variant: "destructive" });
     } finally {
       setRunning(false);
     }
