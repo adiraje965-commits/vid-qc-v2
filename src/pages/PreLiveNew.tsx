@@ -21,7 +21,6 @@ export default function PreLiveNew() {
   const [submitting, setSubmitting] = useState(false);
 
   const submit = async () => {
-    if (!user) { toast({ title: "Sign in first", variant: "destructive" }); return; }
     if (!brief.campaign_name.trim()) { toast({ title: "Campaign name required", variant: "destructive" }); return; }
     if (!playbookUrl.trim()) { toast({ title: "Playbook URL required", variant: "destructive" }); return; }
     setSubmitting(true);
@@ -30,7 +29,7 @@ export default function PreLiveNew() {
       const { data: asset, error: aErr } = await supabase
         .from("prelive_assets")
         .insert({
-          owner_id: user.id,
+          owner_id: user?.id ?? null,
           campaign_name: brief.campaign_name,
           business_key: brief.business_key,
           persona: brief.persona,
@@ -59,7 +58,7 @@ export default function PreLiveNew() {
       const { data: task, error: tErr } = await supabase
         .from("qc_tasks")
         .insert({
-          owner_id: user.id,
+          owner_id: user?.id ?? null,
           url: playbookUrl,
           video_url: videoUrl,
           thumbnail_url: thumbUrl,
