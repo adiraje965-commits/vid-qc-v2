@@ -11,6 +11,10 @@ import TaskDetail from "./pages/TaskDetail";
 import AuthPage from "./pages/Auth";
 import BulkUpload from "./pages/BulkUpload";
 import Trends from "./pages/Trends";
+import PreLiveList from "./pages/PreLiveList";
+import PreLiveNew from "./pages/PreLiveNew";
+import PreLiveAsset from "./pages/PreLiveAsset";
+import PreLiveDiff from "./pages/PreLiveDiff";
 import NotFound from "./pages/NotFound.tsx";
 
 const queryClient = new QueryClient();
@@ -28,6 +32,10 @@ const App = () => (
             <Route path="/new" element={<ProtectedRoute><NewAnalysis /></ProtectedRoute>} />
             <Route path="/bulk" element={<ProtectedRoute><BulkUpload /></ProtectedRoute>} />
             <Route path="/trends" element={<ProtectedRoute><Trends /></ProtectedRoute>} />
+            <Route path="/prelive" element={<ProtectedRoute><PreLiveList /></ProtectedRoute>} />
+            <Route path="/prelive/new" element={<ProtectedRoute><PreLiveNew /></ProtectedRoute>} />
+            <Route path="/prelive/asset/:id" element={<ProtectedRoute><PreLiveAsset /></ProtectedRoute>} />
+            <Route path="/prelive/asset/:id/diff" element={<ProtectedRoute><PreLiveDiff /></ProtectedRoute>} />
             <Route path="/task/:id" element={<ProtectedRoute><TaskDetail /></ProtectedRoute>} />
             <Route path="*" element={<NotFound />} />
           </Routes>
