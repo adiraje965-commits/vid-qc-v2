@@ -1,4 +1,4 @@
-import { BarChart3, LineChart, ListPlus, LogOut, Plus, ShieldCheck } from "lucide-react";
+import { BarChart3, FileVideo, LineChart, ListPlus, LogOut, Plus, ShieldCheck } from "lucide-react";
 import { Link, useLocation } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
@@ -23,6 +23,7 @@ export function AppHeader() {
           {[
             { to: "/", label: "Dashboard", icon: BarChart3 },
             { to: "/new", label: "New", icon: Plus },
+            { to: "/prelive", label: "Pre-Live", icon: FileVideo },
             { to: "/bulk", label: "Bulk", icon: ListPlus },
             { to: "/trends", label: "Trends", icon: LineChart },
           ].map((n) => {
