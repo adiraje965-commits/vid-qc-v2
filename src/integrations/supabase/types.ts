@@ -14,6 +14,125 @@ export type Database = {
   }
   public: {
     Tables: {
+      prelive_assets: {
+        Row: {
+          aspect_ratio: string | null
+          brief_pdf_path: string | null
+          business_key: string | null
+          campaign_name: string
+          channel: string | null
+          created_at: string
+          id: string
+          key_claims: string[]
+          languages: string[]
+          latest_version_id: string | null
+          mandatory_disclaimers: string[]
+          notes: string | null
+          owner_id: string | null
+          persona: string | null
+          target_runtime_sec: number | null
+          thumbnail_url: string | null
+          updated_at: string
+        }
+        Insert: {
+          aspect_ratio?: string | null
+          brief_pdf_path?: string | null
+          business_key?: string | null
+          campaign_name: string
+          channel?: string | null
+          created_at?: string
+          id?: string
+          key_claims?: string[]
+          languages?: string[]
+          latest_version_id?: string | null
+          mandatory_disclaimers?: string[]
+          notes?: string | null
+          owner_id?: string | null
+          persona?: string | null
+          target_runtime_sec?: number | null
+          thumbnail_url?: string | null
+          updated_at?: string
+        }
+        Update: {
+          aspect_ratio?: string | null
+          brief_pdf_path?: string | null
+          business_key?: string | null
+          campaign_name?: string
+          channel?: string | null
+          created_at?: string
+          id?: string
+          key_claims?: string[]
+          languages?: string[]
+          latest_version_id?: string | null
+          mandatory_disclaimers?: string[]
+          notes?: string | null
+          owner_id?: string | null
+          persona?: string | null
+          target_runtime_sec?: number | null
+          thumbnail_url?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      prelive_versions: {
+        Row: {
+          asset_id: string
+          change_notes: string | null
+          created_at: string
+          duration_sec: number | null
+          id: string
+          playbook_url: string
+          qc_task_id: string | null
+          resolve_error: string | null
+          resolved_thumbnail_url: string | null
+          resolved_video_url: string | null
+          status: string
+          updated_at: string
+          version_index: number
+          version_label: string
+        }
+        Insert: {
+          asset_id: string
+          change_notes?: string | null
+          created_at?: string
+          duration_sec?: number | null
+          id?: string
+          playbook_url: string
+          qc_task_id?: string | null
+          resolve_error?: string | null
+          resolved_thumbnail_url?: string | null
+          resolved_video_url?: string | null
+          status?: string
+          updated_at?: string
+          version_index: number
+          version_label: string
+        }
+        Update: {
+          asset_id?: string
+          change_notes?: string | null
+          created_at?: string
+          duration_sec?: number | null
+          id?: string
+          playbook_url?: string
+          qc_task_id?: string | null
+          resolve_error?: string | null
+          resolved_thumbnail_url?: string | null
+          resolved_video_url?: string | null
+          status?: string
+          updated_at?: string
+          version_index?: number
+          version_label?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "prelive_versions_asset_id_fkey"
+            columns: ["asset_id"]
+            isOneToOne: false
+            referencedRelation: "prelive_assets"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       profiles: {
         Row: {
           avatar_url: string | null
@@ -150,6 +269,8 @@ export type Database = {
           owner_id: string | null
           page_markdown: string | null
           page_title: string | null
+          prelive_version_id: string | null
+          source_kind: string
           status: string
           strategic_score: number | null
           tags: string[]
@@ -190,6 +311,8 @@ export type Database = {
           owner_id?: string | null
           page_markdown?: string | null
           page_title?: string | null
+          prelive_version_id?: string | null
+          source_kind?: string
           status?: string
           strategic_score?: number | null
           tags?: string[]
@@ -230,6 +353,8 @@ export type Database = {
           owner_id?: string | null
           page_markdown?: string | null
           page_title?: string | null
+          prelive_version_id?: string | null
+          source_kind?: string
           status?: string
           strategic_score?: number | null
           tags?: string[]
