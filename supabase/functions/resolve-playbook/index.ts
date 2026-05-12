@@ -1,5 +1,13 @@
 // resolve-playbook: takes a Playbook (or any) share URL → resolves a direct
-// MP4/HLS URL we can hand to deep-video-review. Strategy ladder:
+// MP4/HLS URL we can hand to deep-video-review.
+//
+// Strategy:
+// 0) Playbook fast path — call Playbook's GraphQL directly using
+//    org-slug + shared-link-slug headers (no auth needed for public shares).
+//    - With ?assetToken=… → FullAssetModalQuery → asset.url
+//    - Without assetToken → scrape page once for data-collection-token,
+//      then CollectionAssetsQuery → list of assets. If exactly one video,
+//      return it; otherwise return needsAssetSelection.
 // 1) If URL already looks like a media file, accept it.
 // 2) Direct fetch + extract from HTML (og:video, <video>/<source>, JSON blobs).
 // 3) Firecrawl rendered scrape fallback.
@@ -14,6 +22,126 @@ const BROWSER_HEADERS: Record<string, string> = {
   Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
   "Accept-Language": "en-US,en;q=0.9",
 };
+
+// ---------- Playbook GraphQL ----------
+
+const PB_FULL_ASSET_OP_ID = "graphql-frontend-prod/e88447f0bab7b7d6bfd2364dd2253858";
+const PB_COLLECTION_ASSETS_OP_ID = "graphql-frontend-prod/02aafb123aa4f9ad468834c746542cb1";
+
+type PlaybookCtx = { org: string; sharedLinkSlug: string; assetToken: string | null; raw: URL };
+
+function parsePlaybookUrl(input: string): PlaybookCtx | null {
+  let u: URL;
+  try { u = new URL(input); } catch { return null; }
+  if (!/(^|\.)playbook\.com$/i.test(u.hostname)) return null;
+  // /s/<org>/<sharedLinkSlug>
+  const m = u.pathname.match(/^\/s\/([^\/]+)\/([^\/?#]+)/);
+  if (!m) return null;
+  return {
+    org: m[1],
+    sharedLinkSlug: m[2],
+    assetToken: u.searchParams.get("assetToken"),
+    raw: u,
+  };
+}
+
+async function pbGraphQL(ctx: PlaybookCtx, operationName: string, operationId: string, variables: Record<string, unknown>) {
+  const url = new URL("https://www.playbook.com/graphql");
+  url.searchParams.set("operationName", operationName);
+  url.searchParams.set("variables", JSON.stringify(variables));
+  url.searchParams.set("extensions", JSON.stringify({ operationId }));
+  const res = await fetch(url.toString(), {
+    headers: {
+      organization: ctx.org,
+      sharedlinkslug: ctx.sharedLinkSlug,
+      clienttype: "web-app",
+      accept: "*/*",
+      "User-Agent": BROWSER_HEADERS["User-Agent"],
+    },
+  });
+  if (!res.ok) throw new Error(`Playbook GraphQL ${operationName} ${res.status}`);
+  const json = await res.json();
+  if (json.errors?.length) throw new Error(`Playbook GraphQL: ${json.errors[0]?.message ?? "error"}`);
+  return json.data;
+}
+
+function pbAssetSummary(a: any) {
+  const thumb = a?.safeThumbnail?.url
+    ?? (Array.isArray(a?.thumbnails) ? a.thumbnails[0]?.url : null)
+    ?? null;
+  return {
+    token: a?.token as string,
+    title: (a?.title as string) ?? null,
+    duration: typeof a?.duration === "number" ? a.duration : null,
+    mediaType: (a?.mediaType as string) ?? null,
+    thumbnail: thumb as string | null,
+    url: (a?.url as string) ?? null,
+  };
+}
+
+async function pbResolveCollectionToken(ctx: PlaybookCtx): Promise<string | null> {
+  // The shared page exposes data-collection-token in HTML (no auth needed).
+  const res = await fetch(`https://www.playbook.com/s/${ctx.org}/${ctx.sharedLinkSlug}`, {
+    headers: BROWSER_HEADERS,
+  });
+  if (!res.ok) return null;
+  const html = await res.text();
+  const m = html.match(/data-collection-token=["']([^"']+)["']/);
+  return m ? m[1] : null;
+}
+
+async function resolveViaPlaybook(ctx: PlaybookCtx) {
+  // Single-asset deep link
+  if (ctx.assetToken) {
+    const data = await pbGraphQL(ctx, "FullAssetModalQuery", PB_FULL_ASSET_OP_ID, { assetToken: ctx.assetToken });
+    const a = data?.asset;
+    if (!a?.url) {
+      return { ok: false, error: "Playbook asset has no downloadable URL (may be private or still processing)." };
+    }
+    if (typeof a.mediaType === "string" && !a.mediaType.startsWith("video/")) {
+      return { ok: false, error: `Asset is not a video (mediaType=${a.mediaType}).` };
+    }
+    const s = pbAssetSummary(a);
+    return { ok: true, directVideoUrl: s.url, thumbnailUrl: s.thumbnail, title: s.title, via: "playbook-graphql" };
+  }
+
+  // Board / collection link
+  const collectionToken = await pbResolveCollectionToken(ctx);
+  if (!collectionToken) {
+    return { ok: false, error: "Couldn't read the Playbook board (private link?). Open the asset on Playbook and share the single-asset link (with ?assetToken=…)." };
+  }
+  const data = await pbGraphQL(ctx, "CollectionAssetsQuery", PB_COLLECTION_ASSETS_OP_ID, {
+    collectionToken,
+    filters: {},
+    includeSubboards: false,
+    sortBySubboards: true,
+    first: 40,
+    discarded: false,
+    includeGroups: false,
+    incompleteOnly: false,
+  });
+  const edges: any[] = data?.collection?.assetsCursor?.edges ?? [];
+  const videos = edges
+    .map((e) => e?.node)
+    .filter((n) => n && typeof n.mediaType === "string" && n.mediaType.startsWith("video/") && n.url)
+    .map(pbAssetSummary);
+
+  if (videos.length === 0) {
+    return { ok: false, error: "No video assets found on this Playbook board." };
+  }
+  if (videos.length === 1) {
+    const s = videos[0];
+    return { ok: true, directVideoUrl: s.url, thumbnailUrl: s.thumbnail, title: s.title, via: "playbook-graphql" };
+  }
+  return {
+    ok: false,
+    needsAssetSelection: true,
+    assets: videos.map(({ url: _url, ...rest }) => rest),
+    error: "This Playbook board has multiple videos. Pick one to continue.",
+  };
+}
+
+// ---------- Generic fallback (unchanged) ----------
 
 function decode(raw: string) {
   return raw.replace(/\\u0026/gi, "&").replace(/&amp;/gi, "&").replace(/\\\//g, "/");
@@ -98,6 +226,18 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({ ok: false, error: "Provide a valid http(s) URL." }), {
         status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
+    }
+
+    // 0) Playbook fast path
+    const pb = parsePlaybookUrl(url);
+    if (pb) {
+      try {
+        const out = await resolveViaPlaybook(pb);
+        return new Response(JSON.stringify(out), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      } catch (e) {
+        console.warn("[resolve-playbook] playbook path failed", e instanceof Error ? e.message : String(e));
+        // Fall through to generic ladder.
+      }
     }
 
     // 1) Already a media URL?
