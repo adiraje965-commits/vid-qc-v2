@@ -119,38 +119,11 @@ async function resolveViaPlaybook(ctx: PlaybookCtx) {
     return { ok: true, directVideoUrl: s.url, thumbnailUrl: s.thumbnail, title: s.title, via: "playbook-graphql" };
   }
 
-  // Board / collection link
-  const collectionToken = await pbResolveCollectionToken(ctx);
-  if (!collectionToken) {
-    return { ok: false, error: "Couldn't read the Playbook board (private link?). Open the asset on Playbook and share the single-asset link (with ?assetToken=…)." };
-  }
-  const data = await pbGraphQL(ctx, "CollectionAssetsQuery", PB_COLLECTION_ASSETS_OP_ID, {
-    collectionToken,
-    filters: {},
-    includeSubboards: false,
-    sortBySubboards: true,
-    first: 40,
-    discarded: false,
-    includeGroups: false,
-    incompleteOnly: false,
-  });
-  const edges: any[] = data?.collection?.assetsCursor?.edges ?? [];
-  const videos = edges
-    .map((e) => e?.node)
-    .filter((n) => n && typeof n.mediaType === "string" && n.mediaType.startsWith("video/") && n.url)
-    .map(pbAssetSummary);
-
-  if (videos.length === 0) {
-    return { ok: false, error: "No video assets found on this Playbook board." };
-  }
-  if (videos.length === 1) {
-    const s = videos[0];
-    return { ok: true, directVideoUrl: s.url, thumbnailUrl: s.thumbnail, title: s.title, via: "playbook-graphql" };
-  }
+  // Board / collection link — defer listing to list-playbook-assets (paginated).
   return {
     ok: false,
     needsAssetSelection: true,
-    assets: videos.map(({ url: _url, ...rest }) => rest),
+    board: { org: ctx.org, sharedLinkSlug: ctx.sharedLinkSlug },
     error: "This Playbook board has multiple videos. Pick one to continue.",
   };
 }
