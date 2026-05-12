@@ -181,37 +181,12 @@ export default function PreLiveNew() {
           <div className="space-y-3">
             <div>
               <label className="text-[11px] uppercase tracking-wider text-muted-foreground">Playbook share URL</label>
-              <Input value={playbookUrl} onChange={(e) => { setPlaybookUrl(e.target.value); setAssetChoices(null); }} placeholder="https://www.playbook.com/s/<org>/<slug>?assetToken=… or direct .mp4 URL" className="mt-1 h-9" />
-              <p className="mt-1 text-[11px] text-muted-foreground">Paste a Playbook share link (board or single-asset). For boards we'll let you pick which cut. Direct .mp4 URLs also work.</p>
+              <Input value={playbookUrl} onChange={(e) => { setPlaybookUrl(e.target.value); setPickerBoardUrl(null); }} placeholder="https://www.playbook.com/<org>/<slug>?assetToken=… or direct .mp4 URL" className="mt-1 h-9" />
+              <p className="mt-1 text-[11px] text-muted-foreground">Paste a Playbook board or single-asset link. For boards, search and pick the exact cut to QC. Direct .mp4 URLs also work.</p>
             </div>
 
-            {assetChoices && assetChoices.length > 0 && (
-              <div className="rounded-md border border-border p-3">
-                <div className="mb-2 text-xs font-medium">Pick the video to QC</div>
-                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                  {assetChoices.map((a) => (
-                    <button
-                      key={a.token}
-                      type="button"
-                      disabled={submitting}
-                      onClick={() => pickAsset(a)}
-                      className="group flex flex-col gap-1 rounded-md border border-border bg-background p-2 text-left transition hover:border-primary disabled:opacity-50"
-                    >
-                      <div className="relative aspect-video w-full overflow-hidden rounded bg-muted">
-                        {a.thumbnail ? (
-                          <img src={a.thumbnail} alt={a.title ?? "asset"} className="h-full w-full object-cover" loading="lazy" />
-                        ) : (
-                          <div className="flex h-full w-full items-center justify-center text-muted-foreground"><Film className="h-5 w-5" /></div>
-                        )}
-                        {a.duration != null && (
-                          <span className="absolute bottom-1 right-1 rounded bg-black/70 px-1 text-[10px] text-white">{Math.round(a.duration)}s</span>
-                        )}
-                      </div>
-                      <div className="line-clamp-2 text-xs">{a.title ?? a.token}</div>
-                    </button>
-                  ))}
-                </div>
-              </div>
+            {pickerBoardUrl && (
+              <PlaybookAssetPicker boardUrl={pickerBoardUrl} disabled={submitting} onPick={pickAsset} />
             )}
 
             <div>
