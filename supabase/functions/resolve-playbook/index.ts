@@ -93,30 +93,90 @@ function pbAssetSummary(a: any) {
   };
 }
 
+function extractCollectionToken(html: string): string | null {
+  let m = html.match(/data-collection-token=["']([^"']+)["']/);
+  if (m) return m[1];
+  m = html.match(/collectionToken\\["']?:\\?["']([A-Za-z0-9_-]{8,})\\?["']/);
+  if (m) return m[1];
+  m = html.match(/"collectionToken"\s*:\s*"([A-Za-z0-9_-]{8,})"/);
+  if (m) return m[1];
+  m = html.match(/collectionToken=([A-Za-z0-9_-]{8,})/);
+  if (m) return m[1];
+  return null;
+}
+
 async function pbResolveCollectionToken(ctx: PlaybookCtx): Promise<string | null> {
-  // The shared page exposes data-collection-token in HTML (no auth needed).
-  const res = await fetch(`https://www.playbook.com/s/${ctx.org}/${ctx.sharedLinkSlug}`, {
-    headers: BROWSER_HEADERS,
-  });
-  if (!res.ok) return null;
-  const html = await res.text();
-  const m = html.match(/data-collection-token=["']([^"']+)["']/);
-  return m ? m[1] : null;
+  const candidates = [
+    `https://www.playbook.com/s/${ctx.org}/${ctx.sharedLinkSlug}`,
+    `https://www.playbook.com/${ctx.org}/${ctx.sharedLinkSlug}`,
+  ];
+  for (const u of candidates) {
+    try {
+      const res = await fetch(u, { headers: BROWSER_HEADERS, redirect: "follow" });
+      if (!res.ok) { console.warn("[resolve-playbook] board html non-ok", u, res.status); continue; }
+      const html = await res.text();
+      const tok = extractCollectionToken(html);
+      if (tok) return tok;
+      console.warn("[resolve-playbook] board html no token", u, "len=", html.length);
+    } catch (e) {
+      console.warn("[resolve-playbook] board html error", u, e instanceof Error ? e.message : String(e));
+    }
+  }
+  return null;
+}
+
+const PB_COLLECTION_OP_ID = "graphql-frontend-prod/02aafb123aa4f9ad468834c746542cb1";
+
+async function pbFindAssetInBoard(ctx: PlaybookCtx, assetToken: string) {
+  const collectionToken = await pbResolveCollectionToken(ctx);
+  if (!collectionToken) return null;
+  // Walk pages to find the asset. Boards can be huge so cap pages.
+  let after: string | null = null;
+  for (let page = 0; page < 40; page++) {
+    const variables: Record<string, unknown> = {
+      collectionToken, filters: {}, includeSubboards: false,
+      sortBySubboards: true, first: 100, discarded: false,
+      includeGroups: false, incompleteOnly: false,
+    };
+    if (after) variables.after = after;
+    const data: any = await pbGraphQL(ctx, "CollectionAssetsQuery", PB_COLLECTION_OP_ID, variables);
+    const cursorObj = data?.collection?.assetsCursor ?? {};
+    const edges: any[] = cursorObj.edges ?? [];
+    for (const e of edges) {
+      const n = e?.node;
+      if (n?.token === assetToken) return n;
+    }
+    if (!cursorObj.pageInfo?.hasNextPage) break;
+    after = cursorObj.pageInfo?.endCursor ?? null;
+    if (!after) break;
+  }
+  return null;
 }
 
 async function resolveViaPlaybook(ctx: PlaybookCtx) {
   // Single-asset deep link
   if (ctx.assetToken) {
-    const data = await pbGraphQL(ctx, "FullAssetModalQuery", PB_FULL_ASSET_OP_ID, { assetToken: ctx.assetToken });
-    const a = data?.asset;
-    if (!a?.url) {
-      return { ok: false, error: "Playbook asset has no downloadable URL (may be private or still processing)." };
+    try {
+      const data = await pbGraphQL(ctx, "FullAssetModalQuery", PB_FULL_ASSET_OP_ID, { assetToken: ctx.assetToken });
+      const a = data?.asset;
+      if (a?.url) {
+        if (typeof a.mediaType === "string" && !a.mediaType.startsWith("video/")) {
+          return { ok: false, error: `Asset is not a video (mediaType=${a.mediaType}).` };
+        }
+        const s = pbAssetSummary(a);
+        return { ok: true, directVideoUrl: s.url, thumbnailUrl: s.thumbnail, title: s.title, via: "playbook-graphql" };
+      }
+      console.warn("[resolve-playbook] FullAssetModalQuery returned no url; trying board fallback");
+    } catch (e) {
+      console.warn("[resolve-playbook] FullAssetModalQuery failed", e instanceof Error ? e.message : String(e));
     }
-    if (typeof a.mediaType === "string" && !a.mediaType.startsWith("video/")) {
-      return { ok: false, error: `Asset is not a video (mediaType=${a.mediaType}).` };
+    // Fallback: locate asset by walking the board (works when share context is bare /<org>/<slug>)
+    const a = await pbFindAssetInBoard(ctx, ctx.assetToken);
+    if (a?.url) {
+      const s = pbAssetSummary(a);
+      return { ok: true, directVideoUrl: s.url, thumbnailUrl: s.thumbnail, title: s.title, via: "playbook-board-fallback" };
     }
-    const s = pbAssetSummary(a);
-    return { ok: true, directVideoUrl: s.url, thumbnailUrl: s.thumbnail, title: s.title, via: "playbook-graphql" };
+    return { ok: false, error: "Playbook asset has no downloadable URL (may be private or still processing)." };
   }
 
   // Board / collection link — defer listing to list-playbook-assets (paginated).
