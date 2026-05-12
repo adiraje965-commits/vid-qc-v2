@@ -36,9 +36,15 @@ export default function PreLiveNew() {
   const runResolve = async (url: string) => {
     const { data, error } = await supabase.functions.invoke("resolve-playbook", { body: { url } });
     if (error) throw error;
-    return data as
-      | { ok: true; directVideoUrl: string; thumbnailUrl: string | null; title: string | null }
-      | { ok: false; needsAssetSelection?: boolean; assets?: PbAsset[]; error?: string };
+    return data as {
+      ok: boolean;
+      directVideoUrl?: string;
+      thumbnailUrl?: string | null;
+      title?: string | null;
+      needsAssetSelection?: boolean;
+      assets?: PbAsset[];
+      error?: string;
+    };
   };
 
   const finalizeWithResolved = async (sourceUrl: string, resolved: { directVideoUrl: string; thumbnailUrl: string | null; title: string | null }) => {
