@@ -1,62 +1,38 @@
-## Goal
+## Root cause
 
-Make `resolve-playbook` reliably return a direct MP4 URL for any `https://www.playbook.com/s/<org>/<slug>?assetToken=<token>` link (and gracefully list multi-asset boards), instead of failing because the page is a JS-rendered SPA with no embedded media URL.
+The Pre-live URL flow calls `resolve-playbook`, which has a Playbook fast-path that only matches paths starting with `/s/<org>/<slug>` (e.g. `playbook.com/s/demat/...`). Your link uses the bare form `playbook.com/demat/L9UHSGA3VaGW4Hc16N6J55dQ?assetToken=...` (no `/s/` prefix), so the regex returns `null`, the function falls through to the generic HTML scraper, Playbook's SPA returns no media in raw HTML, and you get the "Could not extract a direct video URL" error.
 
-## Discovery (verified live)
-
-Playbook's shared pages render via GraphQL. The HTML contains no media — only `data-organization-slug`, `data-shared-link-slug`, `data-collection-token`. The browser then hits `https://www.playbook.com/graphql` with three identifying headers, no auth, and the response carries the signed direct video URL.
-
-Working call (verified with curl, no cookies/auth):
-
-```
-GET https://www.playbook.com/graphql
-  ?operationName=FullAssetModalQuery
-  &variables={"assetToken":"<assetToken>"}
-  &extensions={"operationId":"graphql-frontend-prod/e88447f0bab7b7d6bfd2364dd2253858"}
-Headers:
-  organization: <org-slug>           // from /s/<org>/<slug>
-  sharedlinkslug: <shared-link-slug> // from /s/<org>/<slug>
-  clienttype: web-app
-  accept: */*
-```
-
-Response → `data.asset.url` is a signed `https://prod.playbookstatic.com/v0/...?ttl=daily&verify=...` MP4 (TTL ~24h), with `mediaType: "video/mp4"`, `title`, `duration`, plus `safeThumbnail.url` and `thumbnails[]` for poster.
-
-For boards without `assetToken`, the same endpoint with `operationName=CollectionAssetsQuery` (operationId `02aafb123aa4f9ad468834c746542cb1`, vars include `collectionToken`) returns the asset list with the same `url` field per asset.
+A second issue: Live QC (`deep-video-review`) has its own `resolveMediaUrl` ladder (kpoint/Bajaj-specific) and never tries the Playbook GraphQL path. So the same Playbook link wouldn't work there either.
 
 ## Changes
 
-### 1) `supabase/functions/resolve-playbook/index.ts` — add a Playbook fast path
+### 1. `supabase/functions/resolve-playbook/index.ts`
+- Update `parsePlaybookUrl` to accept both Playbook share shapes:
+  - `/s/<org>/<sharedLinkSlug>` (existing)
+  - `/<org>/<sharedLinkSlug>` (new — what your link uses)
+  - Excluding non-org reserved paths (`api`, `graphql`, `assets`, `static`, `auth`, `login`, `signup`, `_next`, `favicon.ico`, etc.) so we don't misclassify.
+- When the assetToken path is taken but `asset.url` comes back null, also try the collection fallback before erroring out (some single-asset deep-links only resolve through `CollectionAssetsQuery`).
+- Also probe the rendered HTML (already-fetched via `pbResolveCollectionToken`) for `assetToken=` occurrences so a board-style URL with no token still surfaces the picker reliably.
 
-Before the generic HTML/Firecrawl ladder, detect Playbook URLs and call the GraphQL API directly:
+### 2. `supabase/functions/deep-video-review/index.ts`
+- In `resolveMediaUrl`, before the generic `fetchPageHtml` step, add a Playbook fast-path that mirrors `resolve-playbook`:
+  - Detect `playbook.com` host with the same path patterns.
+  - Call the same GraphQL endpoints (`FullAssetModalQuery`, `CollectionAssetsQuery`) with `organization` + `sharedlinkslug` headers.
+  - Return `{ kind: "mp4", url: asset.url }` on success.
+  - On board links with multiple videos, return `{ kind: "none", reason: "Playbook board has multiple videos — open the single-asset link (with ?assetToken=…)." }` (Live QC has no picker UI).
+- Factor the Playbook helpers into a small inlined block at top of the file (keep edge functions self-contained — no shared module imports across functions).
 
-- Parse URL: match `^https?://(www\.)?playbook\.com/s/(?<org>[^/]+)/(?<slug>[^/?#]+)` and `?assetToken=<token>`.
-- If `assetToken` present → call `FullAssetModalQuery` and return `{ ok:true, directVideoUrl: asset.url, thumbnailUrl: safeThumbnail.url ?? thumbnails[0].url, title, via:"playbook-graphql" }`.
-- If no `assetToken` → call `CollectionAssetsQuery` (need `collectionToken`; resolve by first scraping the share page HTML for `data-collection-token` once, then GraphQL):
-  - If exactly one video asset → return its `url` like above.
-  - If multiple → return `{ ok:false, needsAssetSelection:true, assets:[{token,title,thumbnail,duration,mediaType}] }` so the UI can prompt the user to pick one.
-- Only video assets (`mediaType` starts with `video/`) are eligible.
-- Keep the existing generic ladder as fallback for non-Playbook URLs (no behavior change for Bajaj/etc.).
-
-Edge cases: shared link requires login (GraphQL returns `errors` / null asset) → return a clear "this Playbook link is private; sign in or share publicly" error. Signed URL TTL → not our problem at resolve time; deep-review consumes it within minutes.
-
-### 2) Client UX in `src/pages/PreLiveNew.tsx`
-
-- When `resolve-playbook` returns `needsAssetSelection`, show an inline picker (radio list of thumbnails/titles) and re-call `resolve-playbook` with the chosen `assetToken` appended to the URL. No new pages — just a small section that replaces the URL input area until a choice is made.
-- Show the resolved title/thumbnail as a small confirmation card before "Create & run Deep Review" so the user sees what got picked.
-
-### 3) Hint text in the URL input
-
-Update the existing helper line under the URL field to: "Paste a Playbook share link (board or single-asset link). For boards we'll let you pick which cut." Drop the "if Playbook resolution fails" sentence since it should now Just Work for public links.
-
-## Out of scope
-
-- Authenticated/private Playbook links (no token to pass).
-- Playbook upload, write, comments-back integration.
-- Replacing the generic resolver — only adding a Playbook fast path.
+### 3. `src/pages/PreLiveNew.tsx` — no logic change
+The frontend already handles `needsAssetSelection` + `directVideoUrl` shapes returned by `resolve-playbook`, so nothing needs editing here once the resolver works.
 
 ## Verification
 
-1. Paste the failing URL (`/s/demat/MzU4...?assetToken=hDbY...`) → asset created, Deep Review starts (verified the GraphQL call returns the MP4).
-2. Paste a board URL without `assetToken` → picker appears with the asset(s); selecting one resolves and proceeds.
-3. Paste a non-Playbook MP4/HTML URL → unchanged behavior.
+- `supabase--curl_edge_functions` POST `/resolve-playbook` with `{"url":"https://www.playbook.com/demat/L9UHSGA3VaGW4Hc16N6J55dQ?assetToken=hDbYYo22tdCuRXJrHckhXvov"}` → expect `{ ok:true, directVideoUrl:"https://...mp4", via:"playbook-graphql" }`.
+- Same call without `?assetToken=…` → expect either `ok:true` (single video) or `needsAssetSelection:true` with thumbnails.
+- Re-run the original Pre-live flow in the preview at `/prelive/new` with the failing URL → asset is created and Deep Review starts.
+- Quick sanity check that an unrelated URL (e.g. a kpoint Bajaj link) still resolves through Live QC.
+
+## Out of scope
+
+- Authenticated/private Playbook links (no public token).
+- Adding a Playbook board picker to Live QC (Pre-live keeps its picker; Live QC just asks for a single-asset link).
