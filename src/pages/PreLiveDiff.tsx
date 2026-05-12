@@ -7,6 +7,8 @@ import { Badge } from "@/components/ui/badge";
 import { supabase } from "@/integrations/supabase/client";
 import { QcIssue, scoreColor, severityClass, BUCKET_LABEL } from "@/lib/qc-types";
 import { diffIssues } from "@/lib/version-diff";
+import { ExportMenu } from "@/components/ExportMenu";
+import { exportDiffPdf } from "@/lib/qc-export";
 
 interface VersionRef { id: string; version_label: string; resolved_thumbnail_url: string | null; qc_task_id: string | null; }
 interface TaskScores { overall_score: number | null; technical_score: number | null; brand_score: number | null; strategic_score: number | null; contextual_score: number | null; }
