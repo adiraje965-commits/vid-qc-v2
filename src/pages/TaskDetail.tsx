@@ -18,6 +18,8 @@ import { VideoCapture } from "@/components/VideoCapture";
 import { DeepReviewPanel } from "@/components/DeepReviewPanel";
 import { DeepReviewErrorPanel } from "@/components/DeepReviewErrorPanel";
 import { BucketScoreCard } from "@/components/BucketScoreCard";
+import { ExportMenu } from "@/components/ExportMenu";
+import { exportTaskJson, exportTaskPdf } from "@/lib/qc-export";
 import type { LucideIcon } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 
@@ -27,6 +29,8 @@ export default function TaskDetail() {
   const { id } = useParams();
   const [task, setTask] = useState<QcTask | null>(null);
   const [issues, setIssues] = useState<QcIssue[]>([]);
+  const [preliveAssetId, setPreliveAssetId] = useState<string | null>(null);
+  const [preliveVersionLabel, setPreliveVersionLabel] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const [duration, setDuration] = useState(60);
   const [currentTime, setCurrentTime] = useState(0);
