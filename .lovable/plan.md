@@ -1,30 +1,59 @@
-## Assessment
+# Pre-Live navigation audit + Export QC analysis report
 
-The issue is not that the Playbook board is private anymore. The current backend function tries to find `data-collection-token` only in one exact HTML attribute shape. Playbook public pages also expose the same token inside embedded page data as `collectionToken`, and the prior implementation can misclassify a public board as “private or invalid” when that attribute is missing or not returned in the expected shape.
+## Part 1 — Navigation audit (Pre-Live)
 
-I also found a second related problem: if a user pastes a bare Playbook asset URL like `/demat/...?...assetToken=...`, `resolve-playbook` can fail because single-asset GraphQL resolution needs the canonical `/s/<org>/<boardSlug>?assetToken=...` context. This means selected videos from the picker can work, while older/bare copied URLs can still fail.
+Quick walk-through of each screen's links/buttons. Findings:
 
-## Plan
+- `/prelive` (List) → cards link to `/prelive/asset/:id` ✓; "New" → `/prelive/new` ✓.
+- `/prelive/new` → "Back" uses `nav(-1)` ✓; "Cancel" → `/prelive` ✓; on success → `/prelive/asset/:id` ✓.
+- `/prelive/asset/:id` → "Back" → `/prelive` ✓; per-version "Open" → `/task/:qc_task_id` ✓; "Diff" → `/prelive/asset/:id/diff?from=&to=` ✓.
+- `/prelive/asset/:id/diff` → "Back" → `/prelive/asset/:id` ✓; "Open vN" → `/task/:qc_task_id` ✓.
+- `/task/:id` (when opened from pre-live) → "Back to video list for this URL" routes to `/new?url=…` which is the LIVE flow, not back to the pre-live asset.
 
-1. Harden Playbook board token extraction in `list-playbook-assets`
-   - Keep the existing `data-collection-token` extraction.
-   - Add fallback extraction for escaped JSON/Next data shapes such as `collectionToken\":\"...\"` and normal JSON `"collectionToken":"..."`.
-   - Return a more accurate error if the page is accessible but no collection token can be found.
+Fix: when a task has `source_kind === "prelive_playbook"` and a `prelive_version_id`, change the back link to `/prelive/asset/<asset_id>` (lookup the asset id via the version). Keep current behavior for live tasks.
 
-2. Make Playbook URL parsing canonical
-   - Normalize bare `https://www.playbook.com/<org>/<slug>` board URLs to the public share route `https://www.playbook.com/s/<org>/<slug>` when scraping board HTML.
-   - Preserve support for `/s/<org>/<slug>` links.
+## Part 2 — Export analysis report
 
-3. Fix single-asset Playbook resolution consistency
-   - Update `resolve-playbook` to use the same robust collection token extraction helper.
-   - For `assetToken` links, first attempt direct `FullAssetModalQuery` as today.
-   - If that fails for a bare/copied URL, fall back to board listing via collection token and match the requested `assetToken`, then return the direct video URL from the matched asset.
+### Recommended format: PDF
+A QC report needs to be shared with editors/marketing/compliance who won't run JSON or CSV. PDF is:
+- Self-contained, brand-styleable, viewable everywhere
+- Preserves layout: scores, severity counts, issue list with timestamps, key frames thumbnail strip, summary, brief context (pre-live)
+- One click → email/Slack-friendly
 
-4. Improve diagnostics without exposing internals
-   - Log which extraction path failed server-side.
-   - Keep user-facing errors simple: public board unreadable, no videos found, or selected asset unavailable.
+Secondary export: **JSON** download (raw issues + scores) for power users / archival. Small add, same button as a dropdown.
 
-5. Validate with real Playbook URLs
-   - Test `list-playbook-assets` against the board URLs seen in the network logs.
-   - Test `resolve-playbook` against a selected `assetToken` URL.
-   - Confirm the picker displays videos and selecting one produces a resolvable direct video URL.
+(CSV considered — fine for issues table only, but loses scores/summary/keyframes context. Skipped as primary.)
+
+### Where the export lives
+- **Task detail (`/task/:id`)** — top-right of the header section, next to the score ring. Used by both Live and Pre-Live tasks.
+- **Pre-Live asset (`/prelive/asset/:id`)** — per-version row gets an "Export" button next to "Open". Also a top-level "Export latest" in the header.
+- **Pre-Live diff** — single "Export diff PDF" button (fixed vs regressed vs new + score deltas).
+
+### What's in the PDF
+1. Header: campaign / page title, URL, timestamp, overall score badge
+2. Score buckets (Technical / Brand / Strategic / Contextual) with weights
+3. Severity counts (C/H/M/L)
+4. Analysis summary + customer intent + topic match
+5. Issues table grouped by bucket — severity, timestamp, title, description, suggested fix
+6. Key frames list (timestamp + label + severity)
+7. Pre-Live only: brief context (persona, claims, disclaimers, change notes), version label
+8. Diff variant: from→to scores with deltas, Fixed/Regressed/New issue lists
+
+### Technical approach
+- Client-side PDF using `jspdf` + `jspdf-autotable` (no server round-trip, no extra cost, works offline). Already-fetched task/issues data is reused.
+- New file `src/lib/qc-export.ts` exporting:
+  - `exportTaskPdf(task, issues, opts?)`
+  - `exportTaskJson(task, issues)`
+  - `exportDiffPdf(from, to, fromTask, toTask, diff)`
+- New tiny component `src/components/ExportMenu.tsx` — dropdown (PDF / JSON) using existing `dropdown-menu` + `Button`.
+- Wire into `TaskDetail.tsx`, `PreLiveAsset.tsx`, `PreLiveDiff.tsx`.
+- Filename convention: `qc-<page_title-slug>-<yyyy-mm-dd>.pdf`.
+
+### Files touched
+- New: `src/lib/qc-export.ts`, `src/components/ExportMenu.tsx`
+- Edit: `src/pages/TaskDetail.tsx` (back link fix + export menu)
+- Edit: `src/pages/PreLiveAsset.tsx` (per-version + header export)
+- Edit: `src/pages/PreLiveDiff.tsx` (export diff)
+- Add deps: `jspdf`, `jspdf-autotable`
+
+No backend / RLS / schema changes.

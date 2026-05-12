@@ -11,8 +11,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "@/hooks/use-toast";
-import { scoreColor } from "@/lib/qc-types";
+import { scoreColor, QcIssue } from "@/lib/qc-types";
 import { briefToContextString, BriefDraft, EMPTY_BRIEF } from "@/lib/prelive-types";
+import { ExportMenu } from "@/components/ExportMenu";
+import { exportTaskJson, exportTaskPdf } from "@/lib/qc-export";
 
 interface Asset {
   id: string;
@@ -175,6 +177,28 @@ export default function PreLiveAsset() {
     }
   };
 
+  const exportVersion = async (v: Version, format: "pdf" | "json") => {
+    if (!v.qc_task_id || !asset) { toast({ title: "No analysis to export yet", variant: "destructive" }); return; }
+    const [{ data: t }, { data: is }] = await Promise.all([
+      supabase.from("qc_tasks").select("*").eq("id", v.qc_task_id).maybeSingle(),
+      supabase.from("qc_issues").select("*").eq("task_id", v.qc_task_id).order("timestamp_sec", { ascending: true, nullsFirst: false }),
+    ]);
+    if (!t) { toast({ title: "Could not load analysis", variant: "destructive" }); return; }
+    const task = t as any;
+    const issues = (is ?? []) as unknown as QcIssue[];
+    if (format === "json") return exportTaskJson(task, issues);
+    exportTaskPdf(task, issues, {
+      kind: "prelive",
+      versionLabel: v.version_label,
+      brief: {
+        persona: asset.persona, channel: asset.channel, aspect_ratio: asset.aspect_ratio,
+        target_runtime_sec: asset.target_runtime_sec, languages: asset.languages,
+        key_claims: asset.key_claims, mandatory_disclaimers: asset.mandatory_disclaimers,
+        notes: asset.notes, change_notes: v.change_notes,
+      },
+    });
+  };
+
   if (loading) return <div className="min-h-screen"><AppHeader /><div className="p-8 text-sm text-muted-foreground"><Loader2 className="mr-1 inline h-4 w-4 animate-spin" />Loading…</div></div>;
   if (!asset) return <div className="min-h-screen"><AppHeader /><div className="p-8 text-sm">Asset not found.</div></div>;
 
@@ -276,6 +300,13 @@ export default function PreLiveAsset() {
                     {score != null && <div className={`text-xl font-semibold ${scoreColor(score)}`}>{score}</div>}
                     <div className="flex items-center gap-1">
                       <Button asChild size="sm" variant="ghost" title="Open Playbook source"><a href={v.playbook_url} target="_blank" rel="noreferrer"><ExternalLink className="h-3 w-3" /></a></Button>
+                      {v.qc_task_id && t?.status === "completed" && (
+                        <ExportMenu
+                          label=""
+                          onPdf={() => exportVersion(v, "pdf")}
+                          onJson={() => exportVersion(v, "json")}
+                        />
+                      )}
                       {v.qc_task_id && (
                         <Button asChild size="sm" variant="outline">
                           <Link to={`/task/${v.qc_task_id}`}>Open <ArrowRight className="ml-1 h-3 w-3" /></Link>

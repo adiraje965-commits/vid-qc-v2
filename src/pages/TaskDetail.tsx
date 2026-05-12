@@ -18,6 +18,8 @@ import { VideoCapture } from "@/components/VideoCapture";
 import { DeepReviewPanel } from "@/components/DeepReviewPanel";
 import { DeepReviewErrorPanel } from "@/components/DeepReviewErrorPanel";
 import { BucketScoreCard } from "@/components/BucketScoreCard";
+import { ExportMenu } from "@/components/ExportMenu";
+import { exportTaskJson, exportTaskPdf } from "@/lib/qc-export";
 import type { LucideIcon } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 
@@ -27,6 +29,8 @@ export default function TaskDetail() {
   const { id } = useParams();
   const [task, setTask] = useState<QcTask | null>(null);
   const [issues, setIssues] = useState<QcIssue[]>([]);
+  const [preliveAssetId, setPreliveAssetId] = useState<string | null>(null);
+  const [preliveVersionLabel, setPreliveVersionLabel] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const [duration, setDuration] = useState(60);
   const [currentTime, setCurrentTime] = useState(0);
@@ -43,7 +47,14 @@ export default function TaskDetail() {
         supabase.from("qc_tasks").select("*").eq("id", id).maybeSingle(),
         supabase.from("qc_issues").select("*").eq("task_id", id).order("timestamp_sec", { ascending: true, nullsFirst: false }),
       ]);
-      if (t) setTask(t as unknown as QcTask);
+      if (t) {
+        setTask(t as unknown as QcTask);
+        const tt = t as any;
+        if (tt.source_kind === "prelive_playbook" && tt.prelive_version_id) {
+          const { data: v } = await supabase.from("prelive_versions").select("asset_id,version_label").eq("id", tt.prelive_version_id).maybeSingle();
+          if (v) { setPreliveAssetId((v as any).asset_id); setPreliveVersionLabel((v as any).version_label); }
+        }
+      }
       if (is) setIssues(is as unknown as QcIssue[]);
     };
     load();
@@ -98,10 +109,10 @@ export default function TaskDetail() {
       <AppHeader />
       <main className="mx-auto max-w-[1600px] px-6 py-6">
         <Link
-          to={task.url ? `/new?url=${encodeURIComponent(task.url)}` : "/new"}
+          to={preliveAssetId ? `/prelive/asset/${preliveAssetId}` : (task.url ? `/new?url=${encodeURIComponent(task.url)}` : "/new")}
           className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
         >
-          <ArrowLeft className="h-4 w-4" /> Back to video list for this URL
+          <ArrowLeft className="h-4 w-4" /> {preliveAssetId ? "Back to pre-live asset" : "Back to video list for this URL"}
         </Link>
 
         <section className="workstation-panel soft-grid mt-4 overflow-hidden p-5">
@@ -115,6 +126,9 @@ export default function TaskDetail() {
                 <Badge variant="outline" className="border-primary/30 bg-primary/10 text-primary">
                   {task.id.startsWith("local_") ? "Ready for Cloud review" : "Cloud analysis"}
                 </Badge>
+                {preliveVersionLabel && (
+                  <Badge variant="outline" className="border-primary/30 text-primary">Pre-Live · {preliveVersionLabel}</Badge>
+                )}
                 {task.transcript_status === "ready" && (
                   <Badge variant="outline" className="border-score-good/30 text-score-good">Transcript ready</Badge>
                 )}
@@ -124,20 +138,27 @@ export default function TaskDetail() {
                 {task.url} <ExternalLink className="h-3.5 w-3.5 shrink-0" />
               </a>
             </div>
-            <div className="metric-panel flex min-w-[220px] items-center gap-4 p-4">
-              <div
-                className="grid h-20 w-20 place-items-center rounded-full"
-                style={{ background: `conic-gradient(hsl(var(${scoreCssVar(score)})) ${score * 3.6}deg, hsl(var(--secondary)) 0deg)` }}
-              >
-                <div className="grid h-16 w-16 place-items-center rounded-full bg-background">
-                  <span className={`text-2xl font-semibold ${scoreColor(task.overall_score)}`}>{task.overall_score ?? "--"}</span>
+            <div className="flex items-start gap-3">
+              <div className="metric-panel flex min-w-[220px] items-center gap-4 p-4">
+                <div
+                  className="grid h-20 w-20 place-items-center rounded-full"
+                  style={{ background: `conic-gradient(hsl(var(${scoreCssVar(score)})) ${score * 3.6}deg, hsl(var(--secondary)) 0deg)` }}
+                >
+                  <div className="grid h-16 w-16 place-items-center rounded-full bg-background">
+                    <span className={`text-2xl font-semibold ${scoreColor(task.overall_score)}`}>{task.overall_score ?? "--"}</span>
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Overall Score</div>
+                  <div className={`mt-1 text-lg font-semibold ${scoreColor(task.overall_score)}`}>{verdict.short}</div>
+                  <div className="text-xs text-muted-foreground">weighted across 4 buckets</div>
                 </div>
               </div>
-              <div>
-                <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Overall Score</div>
-                <div className={`mt-1 text-lg font-semibold ${scoreColor(task.overall_score)}`}>{verdict.short}</div>
-                <div className="text-xs text-muted-foreground">weighted across 4 buckets</div>
-              </div>
+              <ExportMenu
+                disabled={isProcessing}
+                onPdf={() => exportTaskPdf(task, issues, { kind: preliveAssetId ? "prelive" : "live", versionLabel: preliveVersionLabel ?? undefined })}
+                onJson={() => exportTaskJson(task, issues)}
+              />
             </div>
           </div>
           <div className="mt-5 grid grid-cols-2 gap-3 xl:grid-cols-4">
