@@ -300,6 +300,13 @@ export default function PreLiveAsset() {
                     {score != null && <div className={`text-xl font-semibold ${scoreColor(score)}`}>{score}</div>}
                     <div className="flex items-center gap-1">
                       <Button asChild size="sm" variant="ghost" title="Open Playbook source"><a href={v.playbook_url} target="_blank" rel="noreferrer"><ExternalLink className="h-3 w-3" /></a></Button>
+                      {v.qc_task_id && t?.status === "completed" && (
+                        <ExportMenu
+                          label=""
+                          onPdf={() => exportVersion(v, "pdf")}
+                          onJson={() => exportVersion(v, "json")}
+                        />
+                      )}
                       {v.qc_task_id && (
                         <Button asChild size="sm" variant="outline">
                           <Link to={`/task/${v.qc_task_id}`}>Open <ArrowRight className="ml-1 h-3 w-3" /></Link>
