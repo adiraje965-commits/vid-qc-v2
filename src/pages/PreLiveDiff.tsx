@@ -146,6 +146,23 @@ export default function PreLiveDiff() {
         </div>
 
         <div className="mt-6 flex justify-end gap-2">
+          <ExportMenu
+            label="Export diff"
+            onPdf={() => exportDiffPdf({
+              campaignName: `${from.version_label} vs ${to.version_label}`,
+              fromLabel: from.version_label,
+              toLabel: to.version_label,
+              fromScores: {
+                overall: fromTask?.overall_score ?? null, technical: fromTask?.technical_score ?? null,
+                brand: fromTask?.brand_score ?? null, strategic: fromTask?.strategic_score ?? null, contextual: fromTask?.contextual_score ?? null,
+              },
+              toScores: {
+                overall: toTask?.overall_score ?? null, technical: toTask?.technical_score ?? null,
+                brand: toTask?.brand_score ?? null, strategic: toTask?.strategic_score ?? null, contextual: toTask?.contextual_score ?? null,
+              },
+              diff,
+            })}
+          />
           {from.qc_task_id && <Button asChild size="sm" variant="outline"><Link to={`/task/${from.qc_task_id}`}>Open {from.version_label}</Link></Button>}
           {to.qc_task_id && <Button asChild size="sm" variant="outline"><Link to={`/task/${to.qc_task_id}`}>Open {to.version_label}</Link></Button>}
         </div>
