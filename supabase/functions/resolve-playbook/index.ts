@@ -30,12 +30,26 @@ const PB_COLLECTION_ASSETS_OP_ID = "graphql-frontend-prod/02aafb123aa4f9ad468834
 
 type PlaybookCtx = { org: string; sharedLinkSlug: string; assetToken: string | null; raw: URL };
 
+const PB_RESERVED_SEGMENTS = new Set([
+  "s", "api", "graphql", "assets", "static", "auth", "login", "logout",
+  "signup", "signin", "_next", "favicon.ico", "settings", "pricing",
+  "about", "help", "privacy", "terms", "contact", "blog", "download",
+  "discover", "explore",
+]);
+
 function parsePlaybookUrl(input: string): PlaybookCtx | null {
   let u: URL;
   try { u = new URL(input); } catch { return null; }
   if (!/(^|\.)playbook\.com$/i.test(u.hostname)) return null;
-  // /s/<org>/<sharedLinkSlug>
-  const m = u.pathname.match(/^\/s\/([^\/]+)\/([^\/?#]+)/);
+  // /s/<org>/<sharedLinkSlug> (canonical share link)
+  let m = u.pathname.match(/^\/s\/([^\/]+)\/([^\/?#]+)/);
+  if (!m) {
+    // Bare /<org>/<sharedLinkSlug> form (also valid)
+    const bare = u.pathname.match(/^\/([^\/]+)\/([^\/?#]+)/);
+    if (bare && !PB_RESERVED_SEGMENTS.has(bare[1].toLowerCase())) {
+      m = bare;
+    }
+  }
   if (!m) return null;
   return {
     org: m[1],
