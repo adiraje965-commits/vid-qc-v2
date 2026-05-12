@@ -52,8 +52,25 @@ async function gql(ctx: Ctx, opName: string, opId: string, variables: Record<str
   return json.data;
 }
 
+function extractCollectionToken(html: string): string | null {
+  // Primary: server-rendered attribute
+  let m = html.match(/data-collection-token=["']([^"']+)["']/);
+  if (m) return m[1];
+  // Fallback 1: escaped JSON inside <script> (Next.js/Apollo cache)
+  m = html.match(/collectionToken\\["']?:\\?["']([A-Za-z0-9_-]{8,})\\?["']/);
+  if (m) return m[1];
+  // Fallback 2: plain JSON
+  m = html.match(/"collectionToken"\s*:\s*"([A-Za-z0-9_-]{8,})"/);
+  if (m) return m[1];
+  // Fallback 3: query-style serialization
+  m = html.match(/collectionToken=([A-Za-z0-9_-]{8,})/);
+  if (m) return m[1];
+  return null;
+}
+
 async function resolveCollectionToken(ctx: Ctx): Promise<string | null> {
   // Try both URL shapes — some boards only render at /<org>/<slug>, others at /s/<org>/<slug>.
+  // /s/ shape tends to be heaviest and most reliably contains data-collection-token.
   const candidates = [
     `https://www.playbook.com/s/${ctx.org}/${ctx.sharedLinkSlug}`,
     `https://www.playbook.com/${ctx.org}/${ctx.sharedLinkSlug}`,
@@ -61,11 +78,17 @@ async function resolveCollectionToken(ctx: Ctx): Promise<string | null> {
   for (const u of candidates) {
     try {
       const res = await fetch(u, { headers: BROWSER_HEADERS, redirect: "follow" });
-      if (!res.ok) continue;
+      if (!res.ok) {
+        console.warn("[list-playbook-assets] fetch non-ok", u, res.status);
+        continue;
+      }
       const html = await res.text();
-      const m = html.match(/data-collection-token=["']([^"']+)["']/);
-      if (m) return m[1];
-    } catch { /* try next */ }
+      const tok = extractCollectionToken(html);
+      if (tok) return tok;
+      console.warn("[list-playbook-assets] no token found in", u, "len=", html.length);
+    } catch (e) {
+      console.warn("[list-playbook-assets] fetch error", u, e instanceof Error ? e.message : String(e));
+    }
   }
   return null;
 }
