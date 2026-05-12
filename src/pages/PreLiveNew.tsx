@@ -1,17 +1,17 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowLeft, Loader2, Sparkles, Film } from "lucide-react";
+import { ArrowLeft, Loader2, Sparkles } from "lucide-react";
 import { AppHeader } from "@/components/AppHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { BriefForm } from "@/components/prelive/BriefForm";
+import { PlaybookAssetPicker } from "@/components/prelive/PlaybookAssetPicker";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "@/hooks/use-toast";
 import { BriefDraft, EMPTY_BRIEF, briefToContextString } from "@/lib/prelive-types";
-
-type PbAsset = { token: string; title: string | null; duration: number | null; mediaType: string | null; thumbnail: string | null };
+import type { PbAsset } from "@/lib/playbook-picker";
 
 function withAssetToken(url: string, token: string) {
   try {
