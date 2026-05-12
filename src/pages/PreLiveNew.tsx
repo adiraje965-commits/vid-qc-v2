@@ -128,12 +128,12 @@ export default function PreLiveNew() {
     if (!brief.campaign_name.trim()) { toast({ title: "Campaign name required", variant: "destructive" }); return; }
     if (!playbookUrl.trim()) { toast({ title: "Playbook URL required", variant: "destructive" }); return; }
     setSubmitting(true);
-    setAssetChoices(null);
+    setPickerBoardUrl(null);
     try {
       const resolved = await runResolve(playbookUrl);
       if (!resolved.ok) {
-        if (resolved.needsAssetSelection && resolved.assets?.length) {
-          setAssetChoices(resolved.assets);
+        if (resolved.needsAssetSelection) {
+          setPickerBoardUrl(playbookUrl);
           toast({ title: "Pick a video", description: "This board has multiple videos." });
           return;
         }
@@ -154,7 +154,7 @@ export default function PreLiveNew() {
       const resolved = await runResolve(url);
       if (!resolved.ok) throw new Error(resolved.error || "Could not resolve selected asset");
       setPlaybookUrl(url);
-      setAssetChoices(null);
+      setPickerBoardUrl(null);
       await finalizeWithResolved(url, resolved);
     } catch (e) {
       toast({ title: "Couldn't resolve selection", description: e instanceof Error ? e.message : String(e), variant: "destructive" });
