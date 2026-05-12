@@ -11,8 +11,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "@/hooks/use-toast";
-import { scoreColor } from "@/lib/qc-types";
+import { scoreColor, QcIssue } from "@/lib/qc-types";
 import { briefToContextString, BriefDraft, EMPTY_BRIEF } from "@/lib/prelive-types";
+import { ExportMenu } from "@/components/ExportMenu";
+import { exportTaskJson, exportTaskPdf } from "@/lib/qc-export";
 
 interface Asset {
   id: string;
