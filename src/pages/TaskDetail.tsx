@@ -47,7 +47,14 @@ export default function TaskDetail() {
         supabase.from("qc_tasks").select("*").eq("id", id).maybeSingle(),
         supabase.from("qc_issues").select("*").eq("task_id", id).order("timestamp_sec", { ascending: true, nullsFirst: false }),
       ]);
-      if (t) setTask(t as unknown as QcTask);
+      if (t) {
+        setTask(t as unknown as QcTask);
+        const tt = t as any;
+        if (tt.source_kind === "prelive_playbook" && tt.prelive_version_id) {
+          const { data: v } = await supabase.from("prelive_versions").select("asset_id,version_label").eq("id", tt.prelive_version_id).maybeSingle();
+          if (v) { setPreliveAssetId((v as any).asset_id); setPreliveVersionLabel((v as any).version_label); }
+        }
+      }
       if (is) setIssues(is as unknown as QcIssue[]);
     };
     load();
