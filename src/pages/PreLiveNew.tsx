@@ -31,7 +31,7 @@ export default function PreLiveNew() {
   const [playbookUrl, setPlaybookUrl] = useState("");
   const [changeNotes, setChangeNotes] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [assetChoices, setAssetChoices] = useState<PbAsset[] | null>(null);
+  const [pickerBoardUrl, setPickerBoardUrl] = useState<string | null>(null);
 
   const runResolve = async (url: string) => {
     const { data, error } = await supabase.functions.invoke("resolve-playbook", { body: { url } });
@@ -42,7 +42,7 @@ export default function PreLiveNew() {
       thumbnailUrl?: string | null;
       title?: string | null;
       needsAssetSelection?: boolean;
-      assets?: PbAsset[];
+      board?: { org: string; sharedLinkSlug: string };
       error?: string;
     };
   };
