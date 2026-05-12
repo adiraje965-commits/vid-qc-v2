@@ -69,9 +69,9 @@ export default function PreLiveNew() {
       .single();
     if (aErr) throw aErr;
 
-    const videoUrl = resolved.directVideoUrl;
-    const thumbUrl = resolved.thumbnailUrl;
-    const title = resolved.title;
+    const videoUrl = resolved.directVideoUrl!;
+    const thumbUrl = resolved.thumbnailUrl ?? null;
+    const title = resolved.title ?? null;
 
     // 2. Create QC task
     const { data: task, error: tErr } = await supabase
