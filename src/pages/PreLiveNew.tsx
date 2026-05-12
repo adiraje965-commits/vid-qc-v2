@@ -47,7 +47,7 @@ export default function PreLiveNew() {
     };
   };
 
-  const finalizeWithResolved = async (sourceUrl: string, resolved: { directVideoUrl: string; thumbnailUrl: string | null; title: string | null }) => {
+  const finalizeWithResolved = async (sourceUrl: string, resolved: { directVideoUrl?: string; thumbnailUrl?: string | null; title?: string | null }) => {
     // 1. Create asset
     const { data: asset, error: aErr } = await supabase
       .from("prelive_assets")
