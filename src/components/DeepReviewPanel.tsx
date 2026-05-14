@@ -43,6 +43,7 @@ export function DeepReviewPanel({ taskId, videoUrl, pageContext }: Props) {
     if (!isLocalId(taskId)) return taskId;
     const localTask = getLocalTask(taskId);
     if (!localTask) throw new Error("Local task not found. Please scan the video again.");
+    const { data: { user } } = await supabase.auth.getUser();
     const { data, error } = await supabase
       .from("qc_tasks")
       .insert({
@@ -56,12 +57,40 @@ export function DeepReviewPanel({ taskId, videoUrl, pageContext }: Props) {
         video_count: 1,
         transcript_status: "pending",
         analysis_summary: "Ready for real video QC. Click Run Deep Review to analyze the actual video frame by frame.",
-        owner_id: null,
+        owner_id: user?.id ?? null,
       })
       .select("id")
       .single();
-    if (error) throw error;
+    if (error) throw new Error(`Failed to create cloud task: ${error.message || error.details || error.hint || JSON.stringify(error)}`);
     return data.id;
+  };
+
+  const extractErrorMessage = async (e: unknown): Promise<string> => {
+    if (!e) return "Unknown error";
+    if (typeof e === "string") return e;
+    const anyE = e as any;
+    // Supabase FunctionsHttpError carries response body in .context
+    if (anyE?.context && typeof anyE.context === "object") {
+      try {
+        const ctx = anyE.context;
+        if (typeof ctx.json === "function") {
+          const body = await ctx.json();
+          if (body?.error) return typeof body.error === "string" ? body.error : (body.error.message || JSON.stringify(body.error));
+          if (body?.message) return body.message;
+          return JSON.stringify(body);
+        }
+        if (typeof ctx.text === "function") {
+          const text = await ctx.text();
+          if (text) return text;
+        }
+      } catch {}
+    }
+    if (anyE instanceof Error) return anyE.message || anyE.toString();
+    if (typeof anyE === "object") {
+      if (anyE.message) return typeof anyE.message === "string" ? anyE.message : JSON.stringify(anyE.message);
+      try { return JSON.stringify(anyE); } catch { return String(anyE); }
+    }
+    return String(anyE);
   };
 
   const run = async () => {
@@ -73,16 +102,21 @@ export function DeepReviewPanel({ taskId, videoUrl, pageContext }: Props) {
         body: { taskId: cloudTaskId, videoUrl, pageContext, persona },
       });
       if (error) throw error;
-      if ((data as any)?.error) throw new Error((data as any).error);
+      const errPayload = (data as any)?.error;
+      if (errPayload) {
+        throw new Error(typeof errPayload === "string" ? errPayload : (errPayload.message || JSON.stringify(errPayload)));
+      }
       toast({ title: "Deep review complete", description: `${(data as any)?.issues ?? 0} real issues · score ${(data as any)?.overall ?? "—"}` });
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      console.error("Deep review failed:", e);
+      const msg = await extractErrorMessage(e);
       const c = classifyResolverError(msg);
       toast({ title: `Deep review failed · ${c.label}`, description: msg, variant: "destructive" });
     } finally {
       setRunning(false);
     }
   };
+
 
   return (
     <div className="surface-card p-4">
