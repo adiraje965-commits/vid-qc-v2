@@ -43,6 +43,7 @@ export function DeepReviewPanel({ taskId, videoUrl, pageContext }: Props) {
     if (!isLocalId(taskId)) return taskId;
     const localTask = getLocalTask(taskId);
     if (!localTask) throw new Error("Local task not found. Please scan the video again.");
+    const { data: { user } } = await supabase.auth.getUser();
     const { data, error } = await supabase
       .from("qc_tasks")
       .insert({
